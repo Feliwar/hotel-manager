@@ -543,7 +543,7 @@ function RoomCard({ hab, onClick, onConfirmSalida }) {
   const bg = {
     libre: 'bg-white',
     reservado: 'bg-white',
-    ocupado: 'bg-red-50',
+    ocupado: 'bg-white',
     confirmar_salida: 'bg-purple-50',
   }
 
@@ -673,7 +673,8 @@ export default function App() {
     const hoy = new Date().toISOString().split('T')[0]
     const vencidas = habs.filter(h => h.estado === 'ocupado' && h.fecha_fin && h.fecha_fin <= hoy)
     for (const h of vencidas) {
-      await supabase.from('habitaciones').update({ estado: 'confirmar_salida' }).eq('id', h.id)
+      const { error } = await supabase.from('habitaciones').update({ estado: 'confirmar_salida' }).eq('id', h.id)
+      if (error) console.error('Error en transición automática de hab.', h.numero, error)
     }
     if (vencidas.length > 0) {
       setHabitaciones(prev => prev.map(h =>
@@ -693,15 +694,23 @@ export default function App() {
     const saldoPendiente = form.estado_pago === 'pagado' ? (total !== (form.monto_pagado || 0)) : false
 
     const payload = { ...form, saldo_pendiente_pago: saldoPendiente }
-    delete payload.precio_desayuno // ya no se guarda por habitación, vive en settings
+    // El tipo se calcula en el frontend desde Configuración, no se guarda en la fila
+    delete payload.tipo
+    // Ya no se guarda por habitación, vive en Configuración (localStorage)
+    delete payload.precio_desayuno
 
-    await supabase.from('habitaciones').update(payload).eq('id', form.id)
+    const { error } = await supabase.from('habitaciones').update(payload).eq('id', form.id)
+    if (error) {
+      alert('No se pudo guardar: ' + error.message)
+      console.error('Error al guardar habitación:', error)
+      return
+    }
     setSelected(null)
     fetchHabitaciones()
   }
 
   async function handleConfirmSalida(hab) {
-    await supabase.from('habitaciones').update({
+    const { error } = await supabase.from('habitaciones').update({
       estado: 'libre',
       fecha_inicio: null,
       fecha_fin: null,
@@ -713,6 +722,11 @@ export default function App() {
       monto_pagado: 0,
       saldo_pendiente_pago: false,
     }).eq('id', hab.id)
+    if (error) {
+      alert('No se pudo confirmar la salida: ' + error.message)
+      console.error('Error al confirmar salida:', error)
+      return
+    }
     fetchHabitaciones()
   }
 
@@ -757,18 +771,6 @@ export default function App() {
                 <span className="text-xs text-gray-400">{l}</span>
               </div>
             ))}
-            <div className="flex items-center gap-1.5">
-              <span className="w-3.5 h-3.5 rounded-full bg-orange-400 flex items-center justify-center">
-                <CheckIcon className="text-white" />
-              </span>
-              <span className="text-xs text-gray-400">Abonado</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-3.5 h-3.5 rounded-full bg-emerald-500 flex items-center justify-center">
-                <CheckIcon className="text-white" />
-              </span>
-              <span className="text-xs text-gray-400">Pagado</span>
-            </div>
           </div>
 
           <div
