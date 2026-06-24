@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from './supabase'
 
 const TIPOS = [
@@ -6,21 +6,22 @@ const TIPOS = [
   'Individual Superior', 'Doble Superior', 'Triple Superior', 'Matrimonial Superior', 'Cuádruple',
 ]
 
-function loadSettings() {
-  try {
-    return {
-      precioDesayuno: parseFloat(localStorage.getItem('hm_desayuno') || '0') || 0,
-      preciosHab: JSON.parse(localStorage.getItem('hm_precios') || 'null') ||
-        Object.fromEntries(TIPOS.map(t => [t, 0])),
-      tiposPorNumero: JSON.parse(localStorage.getItem('hm_tipos_numero') || 'null') ||
-        Object.fromEntries(TIPOS.map(t => [t, ''])),
-    }
-  } catch {
-    return {
-      precioDesayuno: 0,
-      preciosHab: Object.fromEntries(TIPOS.map(t => [t, 0])),
-      tiposPorNumero: Object.fromEntries(TIPOS.map(t => [t, ''])),
-    }
+const DEFAULT_SETTINGS = {
+  precioDesayuno: 0,
+  preciosHab: Object.fromEntries(TIPOS.map(t => [t, 0])),
+  tiposPorNumero: Object.fromEntries(TIPOS.map(t => [t, ''])),
+}
+
+function rowToSettings(row) {
+  if (!row) return DEFAULT_SETTINGS
+  return {
+    precioDesayuno: parseFloat(row.precio_desayuno) || 0,
+    preciosHab: row.precios_hab && Object.keys(row.precios_hab).length > 0
+      ? row.precios_hab
+      : Object.fromEntries(TIPOS.map(t => [t, 0])),
+    tiposPorNumero: row.tipos_por_numero && Object.keys(row.tipos_por_numero).length > 0
+      ? row.tipos_por_numero
+      : Object.fromEntries(TIPOS.map(t => [t, ''])),
   }
 }
 
@@ -68,13 +69,10 @@ function diasDesayuno(fechaInicio, fechaFin, contarDiaIngreso) {
   return dias
 }
 
-// ── CÁLCULO CENTRAL DE MONTOS ────────────────────────────────────────────────
-// empresa_id presente + tarifa_empresa_hab > 0 → precio = personas × tarifa_empresa_hab × noches
-// tarifa_empresa_hab es la tarifa definida EN LA HABITACIÓN al asignarla a empresa
 function calcMontos(form, precioDesayuno) {
   const noches = calcNochesFechas(form.fecha_inicio, form.fecha_fin)
   const personas = form.personas_empresa || 0
-  const tarifaHab = form.tarifa_empresa_hab || 0 // tarifa/persona definida en esta habitación
+  const tarifaHab = form.tarifa_empresa_hab || 0
 
   const precioHab = form.empresa_id && personas > 0 && tarifaHab > 0
     ? personas * tarifaHab * Math.max(noches, 1)
@@ -144,15 +142,15 @@ function ChevronIcon({ open }) {
 }
 
 // ── MODAL CONFIGURACIÓN ──────────────────────────────────────────────────────
-function SettingsModal({ onClose, onSaved, empresas, onEmpresasChange }) {
-  const saved = loadSettings()
-  const [precioDesayuno, setPrecioDesayuno] = useState(saved.precioDesayuno)
-  const [preciosHab, setPreciosHab] = useState(saved.preciosHab)
-  const [tiposPorNumero, setTiposPorNumero] = useState(saved.tiposPorNumero)
+function SettingsModal({ onClose, onSaved, empresas, onEmpresasChange, settings }) {
+  const [precioDesayuno, setPrecioDesayuno] = useState(settings.precioDesayuno)
+  const [preciosHab, setPreciosHab] = useState({ ...settings.preciosHab })
+  const [tiposPorNumero, setTiposPorNumero] = useState({ ...settings.tiposPorNumero })
 
   const [empList, setEmpList] = useState(empresas)
   const [nuevaEmpNombre, setNuevaEmpNombre] = useState('')
   const [guardandoEmp, setGuardandoEmp] = useState(false)
+  const [guardando, setGuardando] = useState(false)
 
   const agregarEmpresa = async () => {
     const nombre = nuevaEmpNombre.trim()
@@ -178,10 +176,16 @@ function SettingsModal({ onClose, onSaved, empresas, onEmpresasChange }) {
     onEmpresasChange(newList)
   }
 
-  const guardar = () => {
-    localStorage.setItem('hm_desayuno', String(precioDesayuno))
-    localStorage.setItem('hm_precios', JSON.stringify(preciosHab))
-    localStorage.setItem('hm_tipos_numero', JSON.stringify(tiposPorNumero))
+  const guardar = async () => {
+    setGuardando(true)
+    const { error } = await supabase.from('settings').upsert({
+      id: 'global',
+      precio_desayuno: precioDesayuno,
+      precios_hab: preciosHab,
+      tipos_por_numero: tiposPorNumero,
+    }, { onConflict: 'id' })
+    setGuardando(false)
+    if (error) { alert('Error al guardar configuración: ' + error.message); return }
     onSaved?.()
     onClose()
   }
@@ -266,9 +270,9 @@ function SettingsModal({ onClose, onSaved, empresas, onEmpresasChange }) {
             className="flex-1 border border-gray-200 rounded-xl py-2.5 text-sm text-gray-600 hover:bg-gray-50 transition">
             Cancelar
           </button>
-          <button onClick={guardar}
-            className="flex-1 bg-[#224258] text-white rounded-xl py-2.5 text-sm font-medium hover:bg-[#1a3447] transition">
-            Guardar
+          <button onClick={guardar} disabled={guardando}
+            className="flex-1 bg-[#224258] text-white rounded-xl py-2.5 text-sm font-medium hover:bg-[#1a3447] transition disabled:opacity-60">
+            {guardando ? 'Guardando…' : 'Guardar'}
           </button>
         </div>
       </div>
@@ -277,8 +281,7 @@ function SettingsModal({ onClose, onSaved, empresas, onEmpresasChange }) {
 }
 
 // ── MODAL HABITACIÓN ─────────────────────────────────────────────────────────
-function RoomModal({ hab, onClose, onSave, empresas }) {
-  const settings = loadSettings()
+function RoomModal({ hab, onClose, onSave, empresas, settings }) {
   const precioBase = settings.preciosHab[hab.tipo] || hab.precio_base || 0
   const precioDesayuno = settings.precioDesayuno
 
@@ -294,6 +297,7 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
     empresa_id: null,
     personas_empresa: 0,
     tarifa_empresa_hab: 0,
+    tipo_documento: 'boleta',
     ...hab,
     precio_base: precioBase,
   })
@@ -344,6 +348,7 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
       estado_pago: abonoPrevio > 0 ? 'pago_parcial' : 'no_pagado',
       monto_pagado: abonoPrevio,
       abono: 0,
+      // tipo_documento se mantiene automáticamente con ...form
     }
     setForm(nuevoForm)
     onSave(nuevoForm)
@@ -397,6 +402,27 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
             </button>
           )}
 
+          {/* ── BOLETA / FACTURA ── */}
+          {mostrarFormulario && (
+            <div className="flex items-center gap-4 border border-gray-200 rounded-xl px-4 py-3">
+              <span className="text-sm font-medium text-gray-600 shrink-0">Documento:</span>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={form.tipo_documento === 'factura'}
+                  onChange={e => set('tipo_documento', e.target.checked ? 'factura' : 'boleta')}
+                  className="w-4 h-4 accent-[#224258]"
+                />
+                <span className="text-sm text-gray-700 font-medium">
+                  {form.tipo_documento === 'factura' ? 'Factura' : 'Boleta'}
+                </span>
+              </label>
+              <span className="text-xs text-gray-400">
+                {form.tipo_documento === 'factura' ? '(con IVA desglosado)' : '(consumidor final)'}
+              </span>
+            </div>
+          )}
+
           {/* ── EMPRESA ── */}
           {mostrarFormulario && (
             <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 space-y-3">
@@ -418,7 +444,6 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
 
               {tieneEmpresa && empresas.length > 0 && (
                 <>
-                  {/* Selector de empresa */}
                   <select
                     className="w-full border border-blue-200 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none"
                     value={form.empresa_id || ''}
@@ -428,7 +453,6 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
                     ))}
                   </select>
 
-                  {/* Tarifa por persona — se define aquí, en esta habitación */}
                   <div>
                     <label className="block mb-1 text-xs text-blue-600 font-medium">Tarifa por persona (esta habitación)</label>
                     <div className="flex items-center border border-blue-200 rounded-lg overflow-hidden bg-white">
@@ -441,7 +465,6 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
                     </div>
                   </div>
 
-                  {/* Cantidad de personas */}
                   <div>
                     <label className="block mb-1.5 text-xs text-blue-600 font-medium">Personas en esta habitación</label>
                     <div className="flex items-center gap-3">
@@ -749,16 +772,13 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
 }
 
 // ── PANEL SIGUIENTE ──────────────────────────────────────────────────────────
-function SiguientePanel({ habitaciones, onSelectHab, empresas, cobrosEmpresa, onToggleCobro }) {
+function SiguientePanel({ habitaciones, onSelectHab, empresas, cobrosEmpresa, onToggleCobro, settings }) {
   const nowSCL = nowSantiago()
   const hoy = nowSCL.toISOString().split('T')[0]
   const ddMM = `${String(nowSCL.getDate()).padStart(2, '0')}/${String(nowSCL.getMonth() + 1).padStart(2, '0')}`
-  const settings = loadSettings()
   const precioDesayuno = settings.precioDesayuno
 
-  // Fecha de navegación para el panel de empresa
   const [fechaEmp, setFechaEmp] = useState(hoy)
-  // Días seleccionados para agrupación (Set de strings ISO)
   const [diasSeleccionados, setDiasSeleccionados] = useState(new Set())
   const [expandedEmpresas, setExpandedEmpresas] = useState({})
 
@@ -790,7 +810,6 @@ function SiguientePanel({ habitaciones, onSelectHab, empresas, cobrosEmpresa, on
   const totalDesayunos = conDesayuno.reduce((sum, h) => sum + h.cantidad, 0)
   const habsConDesayunoLabel = conDesayuno.map(h => h.numero).join('-')
 
-  // ── Datos de empresa para un día dado ──
   function datosEmpresaParaDia(fecha) {
     const habsActivas = habitaciones.filter(h => {
       if (!h.empresa_id || h.estado === 'libre') return false
@@ -832,7 +851,6 @@ function SiguientePanel({ habitaciones, onSelectHab, empresas, cobrosEmpresa, on
 
   const empresasDia = datosEmpresaParaDia(fechaEmp)
 
-  // Días seleccionados: acumulado multi-empresa
   const toggleDia = (fecha) => {
     setDiasSeleccionados(prev => {
       const next = new Set(prev)
@@ -842,7 +860,6 @@ function SiguientePanel({ habitaciones, onSelectHab, empresas, cobrosEmpresa, on
     })
   }
 
-  // Para cada empresa, acumular sus días seleccionados
   const resumenSeleccion = empresas.map(emp => {
     if (diasSeleccionados.size === 0) return null
     const diasArr = [...diasSeleccionados].sort()
@@ -941,7 +958,6 @@ function SiguientePanel({ habitaciones, onSelectHab, empresas, cobrosEmpresa, on
       {empresas.length > 0 && (
         <div className="border border-blue-100 rounded-xl overflow-hidden">
 
-          {/* Header con navegación + instrucción de selección */}
           <div className="bg-blue-50 px-3 py-2.5">
             <div className="flex items-center justify-between mb-1">
               <p className="text-xs font-semibold text-[#224258] uppercase tracking-wider">Empresas por día</p>
@@ -955,7 +971,6 @@ function SiguientePanel({ habitaciones, onSelectHab, empresas, cobrosEmpresa, on
                   className="w-6 h-6 rounded flex items-center justify-center text-[#224258] hover:bg-blue-100 transition font-bold">›</button>
               </div>
             </div>
-            {/* Checkbox del día para selección acumulada */}
             <label className="flex items-center gap-1.5 cursor-pointer select-none">
               <input type="checkbox"
                 checked={diasSeleccionados.has(fechaEmp)}
@@ -967,7 +982,6 @@ function SiguientePanel({ habitaciones, onSelectHab, empresas, cobrosEmpresa, on
             </label>
           </div>
 
-          {/* Lista empresas para el día navegado */}
           {empresasDia.length === 0 ? (
             <div className="px-3 py-3">
               <p className="text-xs text-gray-300 italic">Sin empresas activas este día.</p>
@@ -987,7 +1001,6 @@ function SiguientePanel({ habitaciones, onSelectHab, empresas, cobrosEmpresa, on
                           <ChevronIcon open={!!expandedEmpresas[expandKey]} />
                           <span className="text-sm font-semibold text-[#224258] truncate">{emp.nombre}</span>
                         </button>
-
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-500 pl-5">
                         <span>{habs.length} hab. · {totalPersonas} pers.</span>
@@ -1026,7 +1039,7 @@ function SiguientePanel({ habitaciones, onSelectHab, empresas, cobrosEmpresa, on
             </div>
           )}
 
-          {/* ── RESUMEN AGRUPADO (días seleccionados) ── */}
+          {/* ── RESUMEN AGRUPADO ── */}
           {haySeleccion && (
             <div className="border-t-2 border-blue-200 bg-blue-50/80">
               <div className="px-3 py-2.5">
@@ -1174,9 +1187,8 @@ function calcSaldoCard(hab, settings) {
   return { total, saldo, pagadoTotal, totalUnidadesDesayuno }
 }
 
-function RoomCard({ hab, onClick, onConfirmSalida, empresas }) {
+function RoomCard({ hab, onClick, onConfirmSalida, empresas, settings }) {
   const [showConfirm, setShowConfirm] = useState(false)
-  const settings = loadSettings()
   const empresa = empresas.find(e => e.id === hab.empresa_id) || null
 
   const bg = { libre: 'bg-emerald-50', reservado: 'bg-amber-50', ocupado: 'bg-red-50', confirmar_salida: 'bg-purple-50' }
@@ -1188,11 +1200,13 @@ function RoomCard({ hab, onClick, onConfirmSalida, empresas }) {
   const mostrarMontos = hab.estado === 'reservado' || hab.estado === 'ocupado' || hab.estado === 'confirmar_salida'
   const { total, saldo, pagadoTotal, totalUnidadesDesayuno } = mostrarMontos ? calcSaldoCard(hab, settings) : {}
 
+  const esFactura = hab.tipo_documento === 'factura'
+
   return (
     <>
       <div onClick={handleClick}
         className={`${bg[hab.estado]} border ${ring[hab.estado]} rounded-xl p-2.5 flex flex-col cursor-pointer hover:shadow-sm transition select-none`}
-        style={{ width: '152px', height: '148px' }}>
+        style={{ width: '152px', minHeight: '148px' }}>
 
         <div className="flex items-start justify-between mb-0.5">
           <span className="text-sm font-semibold text-gray-800">{hab.numero}</span>
@@ -1213,12 +1227,19 @@ function RoomCard({ hab, onClick, onConfirmSalida, empresas }) {
         {hab.estado !== 'libre' && hab.estado !== 'confirmar_salida' && hab.fecha_inicio && (
           <div className="mt-0.5 space-y-px">
             <p className="text-[10px] text-gray-400 leading-tight">✈ {fmtFecha(hab.fecha_inicio)}</p>
-            {hab.fecha_fin && <p className="text-[10px] text-gray-400 leading-tight">⬜ {fmtFecha(hab.fecha_fin)}</p>}
+            {hab.fecha_fin && (
+              <>
+                <p className="text-[10px] text-gray-400 leading-tight">⬜ {fmtFecha(hab.fecha_fin)}</p>
+                <p className={`text-[9px] font-semibold leading-tight ${esFactura ? 'text-blue-500' : 'text-gray-400'}`}>
+                  {esFactura ? 'Factura' : 'Boleta'}
+                </p>
+              </>
+            )}
           </div>
         )}
 
         {mostrarMontos && total > 0 && (
-          <div className="mt-auto">
+          <div className="mt-auto pt-1">
             {pagadoTotal ? (
               <span className="text-[10px] font-semibold text-emerald-600 leading-tight">Pagada totalmente</span>
             ) : (
@@ -1251,11 +1272,15 @@ export default function App() {
   const [habitaciones, setHabitaciones] = useState([])
   const [empresas, setEmpresas] = useState([])
   const [cobrosEmpresa, setCobrosEmpresa] = useState({})
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS)
   const [selected, setSelected] = useState(null)
   const [loading, setLoading] = useState(true)
   const [showSettings, setShowSettings] = useState(false)
   const [showSiguiente, setShowSiguiente] = useState(false)
-  const [settingsVersion, setSettingsVersion] = useState(0)
+
+  // Ref para usar siempre los settings actuales en callbacks de realtime
+  const settingsRef = useRef(settings)
+  useEffect(() => { settingsRef.current = settings }, [settings])
 
   useEffect(() => { document.title = 'Hotel Laraquete Reservas' }, [])
 
@@ -1264,9 +1289,9 @@ export default function App() {
     const channel = supabase
       .channel('habitaciones-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'habitaciones' }, payload => {
-        const settings = loadSettings()
-        const tipo = tipoDesdeNumero(payload.new.numero, settings.tiposPorNumero) || payload.new.tipo || null
-        const precioTipo = tipo ? (settings.preciosHab[tipo] || 0) : 0
+        const s = settingsRef.current
+        const tipo = tipoDesdeNumero(payload.new.numero, s.tiposPorNumero) || payload.new.tipo || null
+        const precioTipo = tipo ? (s.preciosHab[tipo] || 0) : 0
         setHabitaciones(prev => prev.map(h =>
           h.id === payload.new.id ? { ...payload.new, tipo, precio_base: precioTipo } : h
         ))
@@ -1276,18 +1301,33 @@ export default function App() {
   }, [])
 
   async function fetchAll() {
-    await Promise.all([fetchHabitaciones(), fetchEmpresas(), fetchCobros()])
+    await Promise.all([fetchSettings(), fetchHabitaciones(), fetchEmpresas(), fetchCobros()])
+    setLoading(false)
+  }
+
+  async function fetchSettings() {
+    const { data, error } = await supabase
+      .from('settings')
+      .select('*')
+      .eq('id', 'global')
+      .single()
+    if (error && error.code !== 'PGRST116') {
+      console.error('Error cargando settings:', error.message)
+      return
+    }
+    const s = rowToSettings(data)
+    setSettings(s)
+    settingsRef.current = s
   }
 
   async function fetchHabitaciones() {
     const { data } = await supabase.from('habitaciones').select('*').order('numero')
-    const settings = loadSettings()
+    const s = settingsRef.current
     const conTipo = (data || []).map(h => {
-      const tipo = tipoDesdeNumero(h.numero, settings.tiposPorNumero) || h.tipo || null
-      return { ...h, tipo, precio_base: tipo ? (settings.preciosHab[tipo] || 0) : 0 }
+      const tipo = tipoDesdeNumero(h.numero, s.tiposPorNumero) || h.tipo || null
+      return { ...h, tipo, precio_base: tipo ? (s.preciosHab[tipo] || 0) : 0 }
     })
     setHabitaciones(conTipo)
-    setLoading(false)
     await aplicarTransicionesAutomaticas(conTipo)
   }
 
@@ -1304,10 +1344,8 @@ export default function App() {
   }
 
   async function handleToggleCobro(cobroKey) {
-    // cobroKey = "uuid_yyyy-mm-dd" — el uuid puede contener guiones, así que
-    // separamos por el último guion que antecede a la fecha (yyyy-mm-dd = 10 chars al final)
     const fecha = cobroKey.slice(-10)
-    const empresa_id = cobroKey.slice(0, cobroKey.length - 11) // quitar "_yyyy-mm-dd"
+    const empresa_id = cobroKey.slice(0, cobroKey.length - 11)
     const actual = cobrosEmpresa[cobroKey] || false
     const nuevo = !actual
     setCobrosEmpresa(prev => ({ ...prev, [cobroKey]: nuevo }))
@@ -1342,8 +1380,8 @@ export default function App() {
   async function handleSave(form) {
     if (form._confirmar_salida) { await handleConfirmSalida(form); return }
 
-    const settings = loadSettings()
-    const m = calcMontos(form, settings.precioDesayuno)
+    const s = settingsRef.current
+    const m = calcMontos(form, s.precioDesayuno)
 
     let saldoPendiente = false
     if (form.estado === 'reservado' && form.estado_pago === 'pagado')
@@ -1354,8 +1392,6 @@ export default function App() {
       Object.entries(form.desayunos_overrides || {}).filter(([dia]) => diasValidos.has(dia))
     )
 
-    // Validar que empresa_id existe en la lista cargada antes de guardar
-    // Si no, limpiar para evitar FK error
     const empresaValida = form.empresa_id && empresas.some(e => e.id === form.empresa_id)
     const empresaIdFinal = empresaValida ? form.empresa_id : null
 
@@ -1366,8 +1402,10 @@ export default function App() {
       tarifa_empresa_hab: empresaIdFinal ? (form.tarifa_empresa_hab || 0) : 0,
       desayunos_overrides: overridesLimpios,
       saldo_pendiente_pago: saldoPendiente,
+      tipo_documento: form.tipo_documento || 'boleta',
     }
     delete payload.tipo
+    delete payload.precio_base
     delete payload.precio_desayuno
     delete payload._confirmar_salida
 
@@ -1384,6 +1422,7 @@ export default function App() {
       no_cobrar_desayuno: false, no_cobrar_iva: false,
       estado_pago: 'no_abonado', abono: 0, monto_pagado: 0, saldo_pendiente_pago: false,
       empresa_id: null, personas_empresa: 0, tarifa_empresa_hab: 0,
+      tipo_documento: 'boleta',
     }).eq('id', hab.id)
     if (error) { alert('No se pudo confirmar la salida: ' + error.message); return }
     setSelected(null)
@@ -1427,14 +1466,15 @@ export default function App() {
           <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, 152px)' }}>
             {habitaciones.map(hab => (
               <RoomCard key={hab.id} hab={hab} onClick={() => setSelected(hab)}
-                onConfirmSalida={handleConfirmSalida} empresas={empresas} />
+                onConfirmSalida={handleConfirmSalida} empresas={empresas} settings={settings} />
             ))}
           </div>
         </main>
 
         <aside className="hidden lg:block w-72 shrink-0 border-l border-gray-100 bg-white p-5 min-h-[calc(100vh-53px)] overflow-y-auto">
           <SiguientePanel habitaciones={habitaciones} onSelectHab={h => setSelected(h)}
-            empresas={empresas} cobrosEmpresa={cobrosEmpresa} onToggleCobro={handleToggleCobro} />
+            empresas={empresas} cobrosEmpresa={cobrosEmpresa} onToggleCobro={handleToggleCobro}
+            settings={settings} />
         </aside>
       </div>
 
@@ -1459,20 +1499,23 @@ export default function App() {
           <div className="px-5 pb-5 pt-3 max-h-96 overflow-y-auto border-t border-gray-100">
             <SiguientePanel habitaciones={habitaciones}
               onSelectHab={h => { setSelected(h); setShowSiguiente(false) }}
-              empresas={empresas} cobrosEmpresa={cobrosEmpresa} onToggleCobro={handleToggleCobro} />
+              empresas={empresas} cobrosEmpresa={cobrosEmpresa} onToggleCobro={handleToggleCobro}
+              settings={settings} />
           </div>
         )}
       </div>
 
       {selected && (
-        <RoomModal hab={selected} onClose={() => setSelected(null)} onSave={handleSave} empresas={empresas} />
+        <RoomModal hab={selected} onClose={() => setSelected(null)} onSave={handleSave}
+          empresas={empresas} settings={settings} />
       )}
       {showSettings && (
         <SettingsModal
           onClose={() => setShowSettings(false)}
-          onSaved={() => { setSettingsVersion(v => v + 1); fetchHabitaciones() }}
+          onSaved={() => fetchSettings().then(fetchHabitaciones)}
           empresas={empresas}
           onEmpresasChange={setEmpresas}
+          settings={settings}
         />
       )}
     </div>
