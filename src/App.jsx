@@ -22,7 +22,6 @@ function loadSettings() {
   }
 }
 
-// Convierte el string "1,7,8,9" en un set de números de habitación
 function parseNumerosList(str) {
   return new Set(
     (str || '')
@@ -32,13 +31,24 @@ function parseNumerosList(str) {
   )
 }
 
-// Dado un número de habitación y el mapeo tipo→string de números, devuelve el tipo
 function tipoDesdeNumero(numero, tiposPorNumero) {
   for (const tipo of TIPOS) {
     const set = parseNumerosList(tiposPorNumero[tipo])
     if (set.has(String(numero))) return tipo
   }
   return null
+}
+
+// Formatea fecha ISO yyyy-mm-dd a dd-mm-aaaa para display
+function fmtFecha(iso) {
+  if (!iso) return ''
+  const [y, m, d] = iso.split('-')
+  return `${d}-${m}-${y}`
+}
+
+// Obtiene hora actual en Santiago CL
+function nowSantiago() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Santiago' }))
 }
 
 // ── Ícono engranaje ──────────────────────────────────────────────────────────
@@ -147,6 +157,8 @@ function SettingsModal({ onClose, onSaved }) {
 // ── MODAL HABITACIÓN ─────────────────────────────────────────────────────────
 function RoomModal({ hab, onClose, onSave }) {
   const settings = loadSettings()
+  const precioBase = settings.preciosHab[hab.tipo] || hab.precio_base || 0
+
   const [form, setForm] = useState({
     no_cobrar_desayuno: false,
     no_cobrar_iva: false,
@@ -154,19 +166,29 @@ function RoomModal({ hab, onClose, onSave }) {
     abono: 0,
     monto_pagado: 0,
     ...hab,
-    precio_base: hab.precio_base || settings.preciosHab[hab.tipo] || 0,
+    precio_base: precioBase,
   })
+
+  // Para el selector de fechas unificado
+  const [fechaFase, setFechaFase] = useState('inicio') // 'inicio' | 'fin'
 
   const precioDesayuno = settings.precioDesayuno
   const desayunosBruto = (form.desayunos || 0) * precioDesayuno
   const desayunosAplicado = form.no_cobrar_desayuno ? 0 : desayunosBruto
   const baseTotal = (form.precio_base || 0) + desayunosAplicado
+  // Comparación de pago se hace contra base sin IVA (precio_base + desayunos sin IVA)
   const ivaBase = baseTotal * 0.19
   const ivaAplicado = form.no_cobrar_iva ? 0 : ivaBase
   const total = Math.round(baseTotal + ivaAplicado)
 
-  const saldoAbono = total - (form.abono || 0)
-  const saldoPagado = total - (form.monto_pagado || 0)
+  const saldoAbono = baseTotal - (form.abono || 0)
+  // Para reservado: comparar monto_pagado contra baseTotal (sin IVA)
+  const saldoPagadoReservado = baseTotal - (form.monto_pagado || 0)
+
+  const esReservado = form.estado === 'reservado'
+  const esOcupado = form.estado === 'ocupado'
+  const esLibre = form.estado === 'libre'
+  const esConfirmarSalida = form.estado === 'confirmar_salida'
 
   const set = (field, value) => {
     setForm(prev => {
@@ -176,8 +198,7 @@ function RoomModal({ hab, onClose, onSave }) {
         u.fecha_fin = null
       }
       if (field === 'estado_pago') {
-        // Al cambiar de estado de pago, limpiar el monto que no corresponde
-        if (value === 'no_abonado') {
+        if (value === 'no_abonado' || value === 'no_pagado') {
           u.abono = 0
           u.monto_pagado = 0
         }
@@ -187,9 +208,47 @@ function RoomModal({ hab, onClose, onSave }) {
         if (value === 'pagado') {
           u.abono = 0
         }
+        if (value === 'pago_parcial') {
+          u.abono = 0
+        }
+        if (value === 'pago_total') {
+          u.abono = 0
+          u.monto_pagado = 0
+        }
       }
       return u
     })
+  }
+
+  // Cuando se elige fecha_inicio, pasar a seleccionar fecha_fin automáticamente
+  const handleFechaInicio = (val) => {
+    set('fecha_inicio', val)
+    setFechaFase('fin')
+  }
+
+  const handleFechaFin = (val) => {
+    set('fecha_fin', val)
+    setFechaFase('inicio')
+  }
+
+  const mostrarFormulario = esReservado || esOcupado || esConfirmarSalida
+
+  // Estado de pago según estado de habitación
+  // Reservado: no_abonado | abonado | pagado
+  // Ocupado: no_pagado | pago_parcial | pago_total
+  const estadosPago = esReservado
+    ? ['no_abonado', 'abonado', 'pagado']
+    : esOcupado || esConfirmarSalida
+      ? ['no_pagado', 'pago_parcial', 'pago_total']
+      : []
+
+  const labelPago = {
+    no_abonado: 'No abonado',
+    abonado: 'Abonado',
+    pagado: 'Pagado',
+    no_pagado: 'No pagado',
+    pago_parcial: 'Pago parcial',
+    pago_total: 'Pago total',
   }
 
   return (
@@ -229,89 +288,136 @@ function RoomModal({ hab, onClose, onSave }) {
           </div>
           <p className="text-xs text-gray-400 -mt-2">El tipo se asigna en Configuración → Habitaciones por tipo.</p>
 
-          {/* Fechas */}
-          {form.estado !== 'libre' && (
-            <div className="grid grid-cols-2 gap-3 bg-gray-50 rounded-xl p-3">
-              <div>
-                <label className="block mb-1 text-xs font-medium text-gray-400">Entrada</label>
-                <input type="date" className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-gray-900 bg-white focus:outline-none"
-                  value={form.fecha_inicio || ''} onChange={e => set('fecha_inicio', e.target.value)} />
+          {/* Llegó la reserva → muta a ocupado (solo para reservado) */}
+          {esReservado && (
+            <button
+              onClick={() => {
+                set('estado', 'ocupado')
+                set('estado_pago', 'no_pagado')
+              }}
+              className="w-full py-2.5 rounded-xl text-sm font-semibold transition"
+              style={{ background: '#B8860B', color: '#fff' }}
+            >
+              Llegó la reserva
+            </button>
+          )}
+
+          {/* Fechas — solo para no libre */}
+          {mostrarFormulario && (
+            <div className="bg-gray-50 rounded-xl p-3 space-y-2">
+              <div className="flex gap-2 mb-1">
+                <button
+                  onClick={() => setFechaFase('inicio')}
+                  className={`flex-1 py-1.5 rounded-lg text-xs font-medium border transition ${fechaFase === 'inicio' ? 'bg-white border-gray-300 text-gray-800 shadow-sm' : 'border-transparent text-gray-400 hover:bg-gray-100'}`}>
+                  Entrada
+                </button>
+                <button
+                  onClick={() => setFechaFase('fin')}
+                  className={`flex-1 py-1.5 rounded-lg text-xs font-medium border transition ${fechaFase === 'fin' ? 'bg-white border-gray-300 text-gray-800 shadow-sm' : 'border-transparent text-gray-400 hover:bg-gray-100'}`}>
+                  Salida
+                </button>
               </div>
-              <div>
-                <label className="block mb-1 text-xs font-medium text-gray-400">Salida</label>
-                <input type="date" className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-gray-900 bg-white focus:outline-none"
-                  value={form.fecha_fin || ''} onChange={e => set('fecha_fin', e.target.value)} />
+              <div className="flex gap-3">
+                <div className="flex-1">
+                  <p className="text-xs text-gray-400 mb-1">Entrada</p>
+                  <p className="text-sm font-medium text-gray-700">{fmtFecha(form.fecha_inicio) || '—'}</p>
+                </div>
+                <div className="flex-1">
+                  <p className="text-xs text-gray-400 mb-1">Salida</p>
+                  <p className="text-sm font-medium text-gray-700">{fmtFecha(form.fecha_fin) || '—'}</p>
+                </div>
+              </div>
+              {fechaFase === 'inicio' && (
+                <input type="date"
+                  className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-gray-900 bg-white focus:outline-none"
+                  value={form.fecha_inicio || ''}
+                  onChange={e => handleFechaInicio(e.target.value)} />
+              )}
+              {fechaFase === 'fin' && (
+                <input type="date"
+                  className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-gray-900 bg-white focus:outline-none"
+                  value={form.fecha_fin || ''}
+                  min={form.fecha_inicio || undefined}
+                  onChange={e => handleFechaFin(e.target.value)} />
+              )}
+            </div>
+          )}
+
+          {/* Desayunos */}
+          {mostrarFormulario && (
+            <div>
+              <label className="block mb-1 text-xs font-medium text-gray-400 uppercase tracking-wider">Desayunos</label>
+              <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none"
+                value={form.desayunos || 0} onChange={e => set('desayunos', parseInt(e.target.value))}>
+                <option value={0}>Ninguno</option>
+                {[1, 2, 3, 4].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+              {(form.desayunos || 0) > 0 && (
+                <p className="text-xs text-gray-400 mt-1">Precio c/u: ${precioDesayuno.toLocaleString('es-CL')} (definido en Configuración)</p>
+              )}
+            </div>
+          )}
+
+          {/* Checkboxes exenciones */}
+          {mostrarFormulario && (
+            <div className="flex gap-5">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" checked={!!form.no_cobrar_desayuno}
+                  onChange={e => set('no_cobrar_desayuno', e.target.checked)}
+                  className="w-4 h-4 accent-gray-800" />
+                <span className="text-sm text-gray-600">No cobrar desayuno</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" checked={!!form.no_cobrar_iva}
+                  onChange={e => set('no_cobrar_iva', e.target.checked)}
+                  className="w-4 h-4 accent-gray-800" />
+                <span className="text-sm text-gray-600">No cobrar IVA</span>
+              </label>
+            </div>
+          )}
+
+          {/* Estado de pago — Reservado */}
+          {(esReservado) && (
+            <div>
+              <label className="block mb-1.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Estado del pago</label>
+              <div className="flex gap-2">
+                {['no_abonado', 'abonado', 'pagado'].map(ep => (
+                  <button key={ep} onClick={() => set('estado_pago', ep)}
+                    className={`flex-1 py-2 rounded-lg text-xs font-medium border transition ${
+                      form.estado_pago === ep
+                        ? ep === 'no_abonado' ? 'bg-gray-100 border-gray-300 text-gray-700'
+                          : ep === 'abonado' ? 'bg-amber-50 border-amber-200 text-amber-700'
+                          : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                        : 'border-gray-200 text-gray-400 hover:bg-gray-50'}`}>
+                    {labelPago[ep]}
+                  </button>
+                ))}
               </div>
             </div>
           )}
 
-          {/* Precio base */}
-          <div>
-            <label className="block mb-1 text-xs font-medium text-gray-400 uppercase tracking-wider">Precio base</label>
-            <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden">
-              <span className="px-3 text-sm text-gray-400 bg-gray-50 border-r border-gray-200 py-2">$</span>
-              <input type="number" className="flex-1 px-3 py-2 text-sm text-gray-900 focus:outline-none"
-                value={form.precio_base || ''} placeholder="0"
-                onChange={e => set('precio_base', parseFloat(e.target.value) || 0)} />
+          {/* Estado de pago — Ocupado / Confirmar salida */}
+          {(esOcupado || esConfirmarSalida) && (
+            <div>
+              <label className="block mb-1.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Estado del pago</label>
+              <div className="flex gap-2">
+                {['no_pagado', 'pago_parcial', 'pago_total'].map(ep => (
+                  <button key={ep} onClick={() => set('estado_pago', ep)}
+                    className={`flex-1 py-2 rounded-lg text-xs font-medium border transition ${
+                      form.estado_pago === ep
+                        ? ep === 'no_pagado' ? 'bg-gray-100 border-gray-300 text-gray-700'
+                          : ep === 'pago_parcial' ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                          : 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                        : 'border-gray-200 text-gray-400 hover:bg-gray-50'}`}>
+                    {labelPago[ep]}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
-          {/* Desayunos */}
-          <div>
-            <label className="block mb-1 text-xs font-medium text-gray-400 uppercase tracking-wider">Desayunos</label>
-            <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none"
-              value={form.desayunos || 0} onChange={e => set('desayunos', parseInt(e.target.value))}>
-              <option value={0}>Ninguno</option>
-              {[1, 2, 3, 4].map(n => <option key={n} value={n}>{n}</option>)}
-            </select>
-            {(form.desayunos || 0) > 0 && (
-              <p className="text-xs text-gray-400 mt-1">Precio c/u: ${precioDesayuno.toLocaleString('es-CL')} (definido en Configuración)</p>
-            )}
-          </div>
-
-          {/* Checkboxes exenciones */}
-          <div className="flex gap-5">
-            <label className="flex items-center gap-2 cursor-pointer select-none">
-              <input type="checkbox" checked={!!form.no_cobrar_desayuno}
-                onChange={e => set('no_cobrar_desayuno', e.target.checked)}
-                className="w-4 h-4 accent-gray-800" />
-              <span className="text-sm text-gray-600">No cobrar desayuno</span>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer select-none">
-              <input type="checkbox" checked={!!form.no_cobrar_iva}
-                onChange={e => set('no_cobrar_iva', e.target.checked)}
-                className="w-4 h-4 accent-gray-800" />
-              <span className="text-sm text-gray-600">No cobrar IVA</span>
-            </label>
-          </div>
-
-          {/* Estado de pago */}
-          <div>
-            <label className="block mb-1.5 text-xs font-medium text-gray-400 uppercase tracking-wider">Estado del pago</label>
-            <div className="flex gap-2">
-              <button onClick={() => set('estado_pago', 'no_abonado')}
-                className={`flex-1 py-2 rounded-lg text-sm font-medium border transition ${form.estado_pago === 'no_abonado'
-                  ? 'bg-gray-100 border-gray-300 text-gray-700'
-                  : 'border-gray-200 text-gray-400 hover:bg-gray-50'}`}>
-                No abonado
-              </button>
-              <button onClick={() => set('estado_pago', 'abonado')}
-                className={`flex-1 py-2 rounded-lg text-sm font-medium border transition ${form.estado_pago === 'abonado'
-                  ? 'bg-orange-50 border-orange-200 text-orange-700'
-                  : 'border-gray-200 text-gray-400 hover:bg-gray-50'}`}>
-                Abonado
-              </button>
-              <button onClick={() => set('estado_pago', 'pagado')}
-                className={`flex-1 py-2 rounded-lg text-sm font-medium border transition ${form.estado_pago === 'pagado'
-                  ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                  : 'border-gray-200 text-gray-400 hover:bg-gray-50'}`}>
-                Pagado
-              </button>
-            </div>
-          </div>
-
-          {/* Abono (solo si estado_pago = abonado) */}
-          {form.estado_pago === 'abonado' && (
+          {/* Monto abonado (reservado + abonado) */}
+          {esReservado && form.estado_pago === 'abonado' && (
             <div>
               <label className="block mb-1 text-xs font-medium text-gray-400 uppercase tracking-wider">Monto abonado</label>
               <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden">
@@ -323,8 +429,8 @@ function RoomModal({ hab, onClose, onSave }) {
             </div>
           )}
 
-          {/* Monto pagado (solo si estado_pago = pagado) */}
-          {form.estado_pago === 'pagado' && (
+          {/* Monto pagado (reservado + pagado) */}
+          {esReservado && form.estado_pago === 'pagado' && (
             <div>
               <label className="block mb-1 text-xs font-medium text-gray-400 uppercase tracking-wider">Monto pagado</label>
               <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden">
@@ -336,65 +442,98 @@ function RoomModal({ hab, onClose, onSave }) {
             </div>
           )}
 
-          {/* Desglose */}
-          <div className="bg-gray-50 rounded-xl p-4 text-sm space-y-2.5">
-            <div className="flex justify-between text-gray-500">
-              <span>Habitación</span>
-              <span>${(form.precio_base || 0).toLocaleString('es-CL')}</span>
+          {/* Monto pago parcial (ocupado) */}
+          {(esOcupado || esConfirmarSalida) && form.estado_pago === 'pago_parcial' && (
+            <div>
+              <label className="block mb-1 text-xs font-medium text-gray-400 uppercase tracking-wider">Monto pagado</label>
+              <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden">
+                <span className="px-3 text-sm text-gray-400 bg-gray-50 border-r border-gray-200 py-2">$</span>
+                <input type="number" className="flex-1 px-3 py-2 text-sm text-gray-900 focus:outline-none"
+                  value={form.monto_pagado || ''} placeholder="0"
+                  onChange={e => set('monto_pagado', parseFloat(e.target.value) || 0)} />
+              </div>
             </div>
-            {(form.desayunos || 0) > 0 && (
+          )}
+
+          {/* Desglose — solo para no libre */}
+          {mostrarFormulario && (
+            <div className="bg-gray-50 rounded-xl p-4 text-sm space-y-2.5">
               <div className="flex justify-between text-gray-500">
-                <span>Desayunos ×{form.desayunos}{form.no_cobrar_desayuno ? ' — exento' : ''}</span>
-                <span className={form.no_cobrar_desayuno ? 'line-through text-gray-300' : ''}>
-                  ${desayunosBruto.toLocaleString('es-CL')}
+                <span>Habitación</span>
+                <span>${(form.precio_base || 0).toLocaleString('es-CL')}</span>
+              </div>
+              {(form.desayunos || 0) > 0 && (
+                <div className="flex justify-between text-gray-500">
+                  <span>Desayunos ×{form.desayunos}{form.no_cobrar_desayuno ? ' — exento' : ''}</span>
+                  <span className={form.no_cobrar_desayuno ? 'line-through text-gray-300' : ''}>
+                    ${desayunosBruto.toLocaleString('es-CL')}
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between text-gray-500">
+                <span>Subtotal</span>
+                <span>${baseTotal.toLocaleString('es-CL')}</span>
+              </div>
+              <div className="flex justify-between text-gray-500">
+                <span>IVA 19%{form.no_cobrar_iva ? ' — exento' : ''}</span>
+                <span className={form.no_cobrar_iva ? 'line-through text-gray-300' : ''}>
+                  ${Math.round(ivaBase).toLocaleString('es-CL')}
                 </span>
               </div>
-            )}
-            <div className="flex justify-between text-gray-500">
-              <span>Subtotal</span>
-              <span>${baseTotal.toLocaleString('es-CL')}</span>
+              {/* Abono reservado */}
+              {esReservado && form.estado_pago === 'abonado' && (form.abono || 0) > 0 && (
+                <div className="flex justify-between text-gray-500">
+                  <span>Abono</span>
+                  <span>−${(form.abono || 0).toLocaleString('es-CL')}</span>
+                </div>
+              )}
+              {/* Monto pagado reservado */}
+              {esReservado && form.estado_pago === 'pagado' && (form.monto_pagado || 0) > 0 && (
+                <div className="flex justify-between text-gray-500">
+                  <span>Monto pagado</span>
+                  <span>−${(form.monto_pagado || 0).toLocaleString('es-CL')}</span>
+                </div>
+              )}
+              {/* Pago parcial ocupado */}
+              {(esOcupado || esConfirmarSalida) && form.estado_pago === 'pago_parcial' && (form.monto_pagado || 0) > 0 && (
+                <div className="flex justify-between text-gray-500">
+                  <span>Pagado</span>
+                  <span>−${(form.monto_pagado || 0).toLocaleString('es-CL')}</span>
+                </div>
+              )}
+              <div className="flex justify-between font-semibold text-gray-900 border-t border-gray-200 pt-2.5">
+                <span>Total</span>
+                <span>${total.toLocaleString('es-CL')}</span>
+              </div>
+              {/* Saldo reservado abonado */}
+              {esReservado && form.estado_pago === 'abonado' && (form.abono || 0) > 0 && saldoAbono > 0 && (
+                <div className="flex justify-between font-medium text-amber-600">
+                  <span>Saldo pendiente</span>
+                  <span>${saldoAbono.toLocaleString('es-CL')}</span>
+                </div>
+              )}
+              {/* Saldo reservado pagado */}
+              {esReservado && form.estado_pago === 'pagado' && saldoPagadoReservado !== 0 && (
+                <div className="flex justify-between font-medium text-amber-600">
+                  <span>Diferencia</span>
+                  <span>${Math.abs(saldoPagadoReservado).toLocaleString('es-CL')}</span>
+                </div>
+              )}
+              {esReservado && form.estado_pago === 'pagado' && saldoPagadoReservado === 0 && (
+                <div className="flex justify-between font-medium text-emerald-600">
+                  <span>Sin diferencia</span>
+                  <span>$0</span>
+                </div>
+              )}
+              {/* Saldo ocupado pago parcial */}
+              {(esOcupado || esConfirmarSalida) && form.estado_pago === 'pago_parcial' && (form.monto_pagado || 0) > 0 && (
+                <div className="flex justify-between font-medium text-amber-600">
+                  <span>Saldo pendiente</span>
+                  <span>${Math.max(0, total - (form.monto_pagado || 0)).toLocaleString('es-CL')}</span>
+                </div>
+              )}
             </div>
-            <div className="flex justify-between text-gray-500">
-              <span>IVA 19%{form.no_cobrar_iva ? ' — exento' : ''}</span>
-              <span className={form.no_cobrar_iva ? 'line-through text-gray-300' : ''}>
-                ${Math.round(ivaBase).toLocaleString('es-CL')}
-              </span>
-            </div>
-            {form.estado_pago === 'abonado' && (form.abono || 0) > 0 && (
-              <div className="flex justify-between text-gray-500">
-                <span>Abono</span>
-                <span>−${(form.abono || 0).toLocaleString('es-CL')}</span>
-              </div>
-            )}
-            {form.estado_pago === 'pagado' && (form.monto_pagado || 0) > 0 && (
-              <div className="flex justify-between text-gray-500">
-                <span>Monto pagado</span>
-                <span>−${(form.monto_pagado || 0).toLocaleString('es-CL')}</span>
-              </div>
-            )}
-            <div className="flex justify-between font-semibold text-gray-900 border-t border-gray-200 pt-2.5">
-              <span>Total</span>
-              <span>${total.toLocaleString('es-CL')}</span>
-            </div>
-            {form.estado_pago === 'abonado' && saldoAbono > 0 && (
-              <div className="flex justify-between font-medium text-orange-600">
-                <span>Saldo pendiente</span>
-                <span>${saldoAbono.toLocaleString('es-CL')}</span>
-              </div>
-            )}
-            {form.estado_pago === 'pagado' && saldoPagado !== 0 && (
-              <div className="flex justify-between font-medium text-amber-600">
-                <span>Saldo pendiente</span>
-                <span>${saldoPagado.toLocaleString('es-CL')}</span>
-              </div>
-            )}
-            {form.estado_pago === 'pagado' && saldoPagado === 0 && (
-              <div className="flex justify-between font-medium text-emerald-600">
-                <span>Sin diferencia</span>
-                <span>$0</span>
-              </div>
-            )}
-          </div>
+          )}
 
           {/* Botones */}
           <div className="flex gap-2 pb-1">
@@ -416,7 +555,13 @@ function RoomModal({ hab, onClose, onSave }) {
 
 // ── PANEL SIGUIENTE ──────────────────────────────────────────────────────────
 function SiguientePanel({ habitaciones, onSelectHab }) {
-  const hoy = new Date().toISOString().split('T')[0]
+  const nowSCL = nowSantiago()
+  const hoy = nowSCL.toISOString().split('T')[0]
+
+  // Hora actual en Santiago
+  const hora = nowSCL.getHours()
+  const minuto = nowSCL.getMinutes()
+  const esDespuesDe12 = hora > 12 || (hora === 12 && minuto >= 0)
 
   const reservas = habitaciones
     .filter(h => h.estado === 'reservado')
@@ -426,14 +571,21 @@ function SiguientePanel({ habitaciones, onSelectHab }) {
     .filter(h => h.estado === 'confirmar_salida' || (h.estado === 'ocupado' && h.fecha_fin && h.fecha_fin <= hoy))
     .sort((a, b) => (a.fecha_fin || '').localeCompare(b.fecha_fin || ''))
 
+  // Próximas salidas: todas las habitaciones con fecha_fin (ocupadas o reservadas), cualquier fecha futura, hasta 20
+  const todasSalidas = habitaciones
+    .filter(h => h.fecha_fin && h.estado !== 'libre' && h.estado !== 'confirmar_salida')
+    .sort((a, b) => (a.fecha_fin || '').localeCompare(b.fecha_fin || ''))
+    .slice(0, 20)
+
   const conDesayuno = habitaciones
-    .filter(h => h.estado === 'ocupado' && (h.desayunos || 0) > 0)
+    .filter(h => (h.estado === 'ocupado' || h.estado === 'reservado') && (h.desayunos || 0) > 0)
     .sort((a, b) => Number(a.numero) - Number(b.numero))
 
   const totalDesayunos = conDesayuno.reduce((sum, h) => sum + (h.desayunos || 0), 0)
   const habsConDesayunoLabel = conDesayuno.map(h => h.numero).join('-')
 
-  const estadoPagoLabel = { pagado: 'Pagado', abonado: 'Abonado', no_abonado: 'No abonado' }
+  // Obtener día de hoy en formato dd/mm
+  const ddMM = `${String(nowSCL.getDate()).padStart(2, '0')}/${String(nowSCL.getMonth() + 1).padStart(2, '0')}`
 
   return (
     <div className="space-y-5">
@@ -452,7 +604,7 @@ function SiguientePanel({ habitaciones, onSelectHab }) {
                 className="w-full text-left bg-amber-50 border border-amber-100 rounded-xl px-3 py-2.5 hover:bg-amber-100 transition">
                 <p className="text-sm font-medium text-gray-800">Hab. {h.numero} — {h.tipo}</p>
                 <p className="text-xs text-gray-400 mt-0.5">
-                  {h.fecha_inicio ? `Entrada: ${h.fecha_inicio}` : 'Sin fecha asignada'}
+                  {h.fecha_inicio ? `Entrada: ${fmtFecha(h.fecha_inicio)}` : 'Sin fecha asignada'}
                 </p>
               </button>
             ))}
@@ -469,7 +621,7 @@ function SiguientePanel({ habitaciones, onSelectHab }) {
                 className="w-full text-left bg-purple-50 border border-purple-100 rounded-xl px-3 py-2.5 hover:bg-purple-100 transition">
                 <p className="text-sm font-medium text-gray-800">Hab. {h.numero} — {h.tipo}</p>
                 <p className="text-xs text-gray-400 mt-0.5">
-                  Salida: {h.fecha_fin} · {estadoPagoLabel[h.estado_pago] || 'No abonado'}
+                  Salida: {fmtFecha(h.fecha_fin)}
                 </p>
               </button>
             ))}
@@ -477,8 +629,27 @@ function SiguientePanel({ habitaciones, onSelectHab }) {
         </div>
       )}
 
+      {/* Próximas salidas (informativo, scrolleable) */}
+      {todasSalidas.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-blue-400 uppercase tracking-wider mb-2">Egresos</p>
+          <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+            {todasSalidas.map(h => (
+              <div key={h.id}
+                className="w-full text-left bg-blue-50 border border-blue-100 rounded-xl px-3 py-2 text-xs">
+                <p className="font-medium text-gray-700">Hab. {h.numero} — {h.tipo || 'Sin tipo'}</p>
+                <p className="text-gray-400 mt-0.5">Salida: {fmtFecha(h.fecha_fin)}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Desayunos */}
       <div className="bg-gray-50 border border-gray-100 rounded-xl px-4 py-3">
-        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">Desayunos totales hoy</p>
+        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">
+          Desayunos hoy · {ddMM}
+        </p>
         <p className="text-3xl font-semibold text-gray-800">{totalDesayunos}</p>
         <p className="text-xs text-gray-400 mt-0.5">
           {conDesayuno.length > 0 ? `Hab. ${habsConDesayunoLabel}` : 'Sin habitaciones con desayuno'}
@@ -525,26 +696,106 @@ function ConfirmSalidaMenu({ hab, onClose, onConfirm }) {
 }
 
 // ── TARJETA HABITACIÓN ───────────────────────────────────────────────────────
+// Calcula el icono de pago según estado de habitación + estado_pago
+function PagoIcon({ hab }) {
+  const ep = hab.estado_pago
+  const est = hab.estado
+
+  // LIBRE: ningún ícono
+  if (est === 'libre') return null
+
+  // RESERVADO
+  if (est === 'reservado') {
+    if (ep === 'no_abonado') {
+      // Cruz roja
+      return (
+        <span className="w-4 h-4 rounded-full bg-red-400 flex items-center justify-center" title="No abonado">
+          <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </span>
+      )
+    }
+    if (ep === 'abonado') {
+      // Tic amarillo
+      return (
+        <span className="w-4 h-4 rounded-full bg-amber-400 flex items-center justify-center" title="Abonado">
+          <CheckIcon className="text-white" />
+        </span>
+      )
+    }
+    if (ep === 'pagado') {
+      // Con diferencia: asterisco verde; sin diferencia: tic verde
+      if (hab.saldo_pendiente_pago) {
+        return (
+          <span className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center" title="Pagado — con diferencia">
+            <span className="text-white font-bold text-xs leading-none">*</span>
+          </span>
+        )
+      } else {
+        return (
+          <span className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center" title="Pagado">
+            <CheckIcon className="text-white" />
+          </span>
+        )
+      }
+    }
+  }
+
+  // OCUPADO / CONFIRMAR SALIDA
+  if (est === 'ocupado' || est === 'confirmar_salida') {
+    if (ep === 'no_pagado') {
+      // Cruz roja
+      return (
+        <span className="w-4 h-4 rounded-full bg-red-400 flex items-center justify-center" title="No pagado">
+          <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </span>
+      )
+    }
+    if (ep === 'pago_parcial') {
+      // Asterisco verde
+      return (
+        <span className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center" title="Pago parcial">
+          <span className="text-white font-bold text-xs leading-none">*</span>
+        </span>
+      )
+    }
+    if (ep === 'pago_total') {
+      // Tic verde
+      return (
+        <span className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center" title="Pago total">
+          <CheckIcon className="text-white" />
+        </span>
+      )
+    }
+  }
+
+  return null
+}
+
 function RoomCard({ hab, onClick, onConfirmSalida }) {
   const [showConfirm, setShowConfirm] = useState(false)
 
+  // Colores de fondo por estado — teñidos suaves
+  const bg = {
+    libre: 'bg-emerald-50',
+    reservado: 'bg-amber-50',
+    ocupado: 'bg-red-50',
+    confirmar_salida: 'bg-purple-50',
+  }
+  const ring = {
+    libre: 'border-emerald-100',
+    reservado: 'border-amber-200',
+    ocupado: 'border-red-200',
+    confirmar_salida: 'border-purple-300',
+  }
   const dot = {
     libre: 'bg-emerald-400',
     reservado: 'bg-amber-400',
-    ocupado: 'bg-red-600',
+    ocupado: 'bg-red-500',
     confirmar_salida: 'bg-purple-500',
-  }
-  const ring = {
-    libre: 'border-gray-100',
-    reservado: 'border-amber-200',
-    ocupado: 'border-red-300',
-    confirmar_salida: 'border-purple-300',
-  }
-  const bg = {
-    libre: 'bg-white',
-    reservado: 'bg-white',
-    ocupado: 'bg-white',
-    confirmar_salida: 'bg-purple-50',
   }
 
   const handleClick = () => {
@@ -560,30 +811,14 @@ function RoomCard({ hab, onClick, onConfirmSalida }) {
       <div onClick={handleClick}
         className={`${bg[hab.estado]} border ${ring[hab.estado]} rounded-xl p-3 flex flex-col cursor-pointer hover:shadow-sm transition select-none`}
         style={{ width: '152px', height: '140px' }}>
-        <div className="flex items-center justify-between mb-1.5">
+        <div className="flex items-center justify-between mb-1">
           <span className="text-sm font-semibold text-gray-800">{hab.numero}</span>
           <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${dot[hab.estado]}`} />
         </div>
 
-        {/* Tic de pago, justo debajo del círculo de estado */}
-        <div className="flex justify-end mb-1" style={{ minHeight: '11px' }}>
-          {hab.estado_pago === 'abonado' && (
-            <span className="w-4 h-4 rounded-full bg-orange-400 flex items-center justify-center" title="Abonado">
-              <CheckIcon className="text-white" />
-            </span>
-          )}
-          {hab.estado_pago === 'pagado' && (
-            <span className="flex items-center gap-0.5" title={hab.saldo_pendiente_pago ? 'Pagado — con diferencia' : 'Pagado'}>
-              <span className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center">
-                <CheckIcon className="text-white" />
-              </span>
-              {!hab.saldo_pendiente_pago && (
-                <span className="w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center -ml-1.5">
-                  <CheckIcon className="text-white" />
-                </span>
-              )}
-            </span>
-          )}
+        {/* Ícono pago — solo si no es libre */}
+        <div className="flex justify-end mb-1" style={{ minHeight: '16px' }}>
+          <PagoIcon hab={hab} />
         </div>
 
         <span className="text-xs text-gray-400 leading-snug">{hab.tipo || 'Sin tipo'}</span>
@@ -592,19 +827,16 @@ function RoomCard({ hab, onClick, onConfirmSalida }) {
           <span className="text-xs text-purple-600 font-medium mt-1">Confirmar salida</span>
         )}
         {hab.estado !== 'libre' && hab.estado !== 'confirmar_salida' && hab.fecha_inicio && (
-          <span className="text-xs text-gray-400 mt-1">{hab.fecha_inicio}</span>
+          <span className="text-xs text-gray-400 mt-1">{fmtFecha(hab.fecha_inicio)}</span>
         )}
 
         {(hab.precio_base || 0) > 0 && (
-          <span className="text-xs text-gray-500 mt-auto pt-2">
+          <span className="text-xs text-gray-500 mt-auto pt-1">
             ${hab.precio_base.toLocaleString('es-CL')}
           </span>
         )}
         {(hab.desayunos || 0) > 0 && (
           <span className="text-xs text-gray-400">{hab.desayunos} des.</span>
-        )}
-        {hab.estado_pago === 'no_abonado' && hab.estado !== 'libre' && (
-          <span className="text-xs text-amber-500 font-medium mt-0.5">Por cobrar</span>
         )}
       </div>
 
@@ -642,7 +874,7 @@ export default function App() {
         const habActualizada = {
           ...payload.new,
           tipo,
-          precio_base: (payload.new.precio_base || 0) > 0 ? payload.new.precio_base : precioTipo,
+          precio_base: precioTipo,
         }
         setHabitaciones(prev => prev.map(h => h.id === habActualizada.id ? habActualizada : h))
       })
@@ -659,8 +891,7 @@ export default function App() {
       return {
         ...h,
         tipo,
-        // Si la habitación no tiene precio propio guardado, refleja el precio del tipo (Settings)
-        precio_base: (h.precio_base || 0) > 0 ? h.precio_base : precioTipo,
+        precio_base: precioTipo,
       }
     })
     setHabitaciones(conTipo)
@@ -668,10 +899,21 @@ export default function App() {
     await aplicarTransicionesAutomaticas(conTipo)
   }
 
-  // Pasa habitaciones "ocupado" con fecha de salida vencida a "confirmar_salida"
+  // Pasa habitaciones "ocupado" con fecha de salida vencida a "confirmar_salida" a las 12:00 Santiago
   async function aplicarTransicionesAutomaticas(habs) {
-    const hoy = new Date().toISOString().split('T')[0]
-    const vencidas = habs.filter(h => h.estado === 'ocupado' && h.fecha_fin && h.fecha_fin <= hoy)
+    const nowSCL = nowSantiago()
+    const hora = nowSCL.getHours()
+    const minuto = nowSCL.getMinutes()
+    const hoy = nowSCL.toISOString().split('T')[0]
+    const esDespuesDe12 = hora > 12 || (hora === 12 && minuto >= 0)
+
+    const vencidas = habs.filter(h => {
+      if (h.estado !== 'ocupado' || !h.fecha_fin) return false
+      if (h.fecha_fin < hoy) return true
+      if (h.fecha_fin === hoy && esDespuesDe12) return true
+      return false
+    })
+
     for (const h of vencidas) {
       const { error } = await supabase.from('habitaciones').update({ estado: 'confirmar_salida' }).eq('id', h.id)
       if (error) console.error('Error en transición automática de hab.', h.numero, error)
@@ -684,19 +926,20 @@ export default function App() {
   }
 
   async function handleSave(form) {
-    // Calcula si el pago cubre exactamente el total, para mostrar uno o dos tics
-    const precioDesayuno = loadSettings().precioDesayuno
+    const settings = loadSettings()
+    const precioDesayuno = settings.precioDesayuno
     const desayunosBruto = (form.desayunos || 0) * precioDesayuno
     const desayunosAplicado = form.no_cobrar_desayuno ? 0 : desayunosBruto
     const baseTotal = (form.precio_base || 0) + desayunosAplicado
-    const ivaAplicado = form.no_cobrar_iva ? 0 : baseTotal * 0.19
-    const total = Math.round(baseTotal + ivaAplicado)
-    const saldoPendiente = form.estado_pago === 'pagado' ? (total !== (form.monto_pagado || 0)) : false
+
+    // Para reservado: comparar monto_pagado contra baseTotal (sin IVA)
+    let saldoPendiente = false
+    if (form.estado === 'reservado' && form.estado_pago === 'pagado') {
+      saldoPendiente = baseTotal !== (form.monto_pagado || 0)
+    }
 
     const payload = { ...form, saldo_pendiente_pago: saldoPendiente }
-    // El tipo se calcula en el frontend desde Configuración, no se guarda en la fila
     delete payload.tipo
-    // Ya no se guarda por habitación, vive en Configuración (localStorage)
     delete payload.precio_desayuno
 
     const { error } = await supabase.from('habitaciones').update(payload).eq('id', form.id)
@@ -724,14 +967,14 @@ export default function App() {
     }).eq('id', hab.id)
     if (error) {
       alert('No se pudo confirmar la salida: ' + error.message)
-      console.error('Error al confirmar salida:', error)
       return
     }
     fetchHabitaciones()
   }
 
   const pendingCount = habitaciones.filter(h => {
-    const hoy = new Date().toISOString().split('T')[0]
+    const nowSCL = nowSantiago()
+    const hoy = nowSCL.toISOString().split('T')[0]
     return h.estado === 'reservado' || h.estado === 'confirmar_salida' || (h.estado === 'ocupado' && h.fecha_fin && h.fecha_fin <= hoy)
   }).length
 
@@ -763,7 +1006,7 @@ export default function App() {
             {[
               ['bg-emerald-400', 'Libre'],
               ['bg-amber-400', 'Reservado'],
-              ['bg-red-600', 'Ocupado'],
+              ['bg-red-500', 'Ocupado'],
               ['bg-purple-500', 'Confirmar salida'],
             ].map(([c, l]) => (
               <div key={l} className="flex items-center gap-1.5">
