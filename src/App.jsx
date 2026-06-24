@@ -404,22 +404,28 @@ function RoomModal({ hab, onClose, onSave, empresas, settings }) {
 
           {/* ── BOLETA / FACTURA ── */}
           {mostrarFormulario && (
-            <div className="flex items-center gap-4 border border-gray-200 rounded-xl px-4 py-3">
-              <span className="text-sm font-medium text-gray-600 shrink-0">Documento:</span>
-              <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={form.tipo_documento === 'factura'}
-                  onChange={e => set('tipo_documento', e.target.checked ? 'factura' : 'boleta')}
-                  className="w-4 h-4 accent-[#224258]"
-                />
-                <span className="text-sm text-gray-700 font-medium">
-                  {form.tipo_documento === 'factura' ? 'Factura' : 'Boleta'}
-                </span>
-              </label>
-              <span className="text-xs text-gray-400">
-                {form.tipo_documento === 'factura' ? '(con IVA desglosado)' : '(consumidor final)'}
-              </span>
+            <div className="border border-gray-200 rounded-xl px-4 py-3">
+              <p className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Documento</p>
+              <div className="flex gap-5">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={form.tipo_documento !== 'factura'}
+                    onChange={() => set('tipo_documento', 'boleta')}
+                    className="w-4 h-4 accent-[#224258]"
+                  />
+                  <span className="text-sm text-gray-700">Boleta</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={form.tipo_documento === 'factura'}
+                    onChange={() => set('tipo_documento', 'factura')}
+                    className="w-4 h-4 accent-[#224258]"
+                  />
+                  <span className="text-sm text-gray-700">Factura</span>
+                </label>
+              </div>
             </div>
           )}
 
@@ -1301,7 +1307,9 @@ export default function App() {
   }, [])
 
   async function fetchAll() {
-    await Promise.all([fetchSettings(), fetchHabitaciones(), fetchEmpresas(), fetchCobros()])
+    // Settings PRIMERO — fetchHabitaciones necesita los precios ya cargados
+    const s = await fetchSettings()
+    await Promise.all([fetchHabitaciones(s), fetchEmpresas(), fetchCobros()])
     setLoading(false)
   }
 
@@ -1313,19 +1321,21 @@ export default function App() {
       .single()
     if (error && error.code !== 'PGRST116') {
       console.error('Error cargando settings:', error.message)
-      return
+      return settingsRef.current
     }
     const s = rowToSettings(data)
     setSettings(s)
     settingsRef.current = s
+    return s
   }
 
-  async function fetchHabitaciones() {
+  async function fetchHabitaciones(s) {
+    // Acepta settings como parámetro para evitar depender del ref en la carga inicial
+    const cfg = s || settingsRef.current
     const { data } = await supabase.from('habitaciones').select('*').order('numero')
-    const s = settingsRef.current
     const conTipo = (data || []).map(h => {
-      const tipo = tipoDesdeNumero(h.numero, s.tiposPorNumero) || h.tipo || null
-      return { ...h, tipo, precio_base: tipo ? (s.preciosHab[tipo] || 0) : 0 }
+      const tipo = tipoDesdeNumero(h.numero, cfg.tiposPorNumero) || h.tipo || null
+      return { ...h, tipo, precio_base: tipo ? (cfg.preciosHab[tipo] || 0) : 0 }
     })
     setHabitaciones(conTipo)
     await aplicarTransicionesAutomaticas(conTipo)
@@ -1512,7 +1522,7 @@ export default function App() {
       {showSettings && (
         <SettingsModal
           onClose={() => setShowSettings(false)}
-          onSaved={() => fetchSettings().then(fetchHabitaciones)}
+          onSaved={() => fetchSettings().then(s => fetchHabitaciones(s))}
           empresas={empresas}
           onEmpresasChange={setEmpresas}
           settings={settings}
