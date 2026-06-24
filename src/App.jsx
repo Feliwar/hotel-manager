@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from './supabase'
 
 const TIPOS = [
@@ -6,8 +6,6 @@ const TIPOS = [
   'Individual Superior', 'Doble Superior', 'Triple Superior', 'Matrimonial Superior', 'Cuádruple',
 ]
 
-// ── Helpers settings (localStorage — precios y tipos, sin riesgo multi-dispositivo
-//    porque es config del negocio que se configura una vez por dispositivo) ──────
 function loadSettings() {
   try {
     return {
@@ -59,41 +57,34 @@ function sumarDias(iso, n) {
   const [y, m, d] = iso.split('-').map(Number)
   const dt = new Date(y, m - 1, d)
   dt.setDate(dt.getDate() + n)
-  const yy = dt.getFullYear()
-  const mm = String(dt.getMonth() + 1).padStart(2, '0')
-  const dd = String(dt.getDate()).padStart(2, '0')
-  return `${yy}-${mm}-${dd}`
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`
 }
 
 function diasDesayuno(fechaInicio, fechaFin, contarDiaIngreso) {
   if (!fechaInicio || !fechaFin) return []
   const dias = []
   let cursor = contarDiaIngreso ? fechaInicio : sumarDias(fechaInicio, 1)
-  while (cursor <= fechaFin) {
-    dias.push(cursor)
-    cursor = sumarDias(cursor, 1)
-  }
+  while (cursor <= fechaFin) { dias.push(cursor); cursor = sumarDias(cursor, 1) }
   return dias
 }
 
 // ── CÁLCULO CENTRAL DE MONTOS ────────────────────────────────────────────────
-// Si hay empresa: precio_hab = personas × tarifa_empresa (reemplaza precio_base)
-function calcMontos(form, precioDesayuno, empresa = null) {
+// empresa_id presente + tarifa_empresa_hab > 0 → precio = personas × tarifa_empresa_hab × noches
+// tarifa_empresa_hab es la tarifa definida EN LA HABITACIÓN al asignarla a empresa
+function calcMontos(form, precioDesayuno) {
   const noches = calcNochesFechas(form.fecha_inicio, form.fecha_fin)
   const personas = form.personas_empresa || 0
-  const tarifaEmpresa = empresa?.tarifa_persona || 0
+  const tarifaHab = form.tarifa_empresa_hab || 0 // tarifa/persona definida en esta habitación
 
-  // Precio habitación: empresa → personas × tarifa; normal → precio_base × noches
-  const precioHab = form.empresa_id && empresa && personas > 0
-    ? personas * tarifaEmpresa * Math.max(noches, 1)
+  const precioHab = form.empresa_id && personas > 0 && tarifaHab > 0
+    ? personas * tarifaHab * Math.max(noches, 1)
     : (form.precio_base || 0) * Math.max(noches, 1)
 
   const desayunosBase = form.desayunos || 0
   const overrides = form.desayunos_overrides || {}
   const dias = diasDesayuno(form.fecha_inicio, form.fecha_fin, form.contar_dia_ingreso)
   const detalleDesayunos = dias.map(dia => ({
-    dia,
-    cantidad: overrides[dia] !== undefined ? overrides[dia] : desayunosBase,
+    dia, cantidad: overrides[dia] !== undefined ? overrides[dia] : desayunosBase,
   }))
   const totalUnidadesDesayuno = detalleDesayunos.reduce((s, d) => s + d.cantidad, 0)
   const desayunosBruto = totalUnidadesDesayuno * precioDesayuno
@@ -114,18 +105,8 @@ function calcMontos(form, precioDesayuno, empresa = null) {
     totalUnidadesDesayuno, desayunosBruto, desayunosAplicado,
     subtotal, ivaBase, ivaAplicado, total,
     abono, montoPagado, saldoTrasAbono, diferenciaPagadoReservado,
-    personas, tarifaEmpresa,
+    personas, tarifaHab,
   }
-}
-
-// Monto por DÍA de empresa en una habitación (personas × tarifa, sin IVA ni desayuno)
-function montoDiarioEmpresa(hab, empresa, precioDesayuno) {
-  if (!hab.empresa_id || !empresa || !hab.fecha_inicio || !hab.fecha_fin) return 0
-  const personas = hab.personas_empresa || 0
-  const noches = calcNochesFechas(hab.fecha_inicio, hab.fecha_fin)
-  if (noches === 0) return 0
-  // tarifa diaria por habitación = personas × tarifa_empresa
-  return personas * (empresa.tarifa_persona || 0)
 }
 
 // ── Íconos ───────────────────────────────────────────────────────────────────
@@ -144,7 +125,6 @@ function GearIcon() {
     </svg>
   )
 }
-
 function CheckIcon({ className }) {
   return (
     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -153,12 +133,11 @@ function CheckIcon({ className }) {
     </svg>
   )
 }
-
 function ChevronIcon({ open }) {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-      className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+      className={`transition-transform duration-150 shrink-0 ${open ? 'rotate-180' : ''}`}>
       <polyline points="18 15 12 9 6 15" />
     </svg>
   )
@@ -171,10 +150,8 @@ function SettingsModal({ onClose, onSaved, empresas, onEmpresasChange }) {
   const [preciosHab, setPreciosHab] = useState(saved.preciosHab)
   const [tiposPorNumero, setTiposPorNumero] = useState(saved.tiposPorNumero)
 
-  // Empresas — edición local, se persiste en Supabase al guardar
   const [empList, setEmpList] = useState(empresas)
   const [nuevaEmpNombre, setNuevaEmpNombre] = useState('')
-  const [nuevaEmpTarifa, setNuevaEmpTarifa] = useState('')
   const [guardandoEmp, setGuardandoEmp] = useState(false)
 
   const agregarEmpresa = async () => {
@@ -183,34 +160,28 @@ function SettingsModal({ onClose, onSaved, empresas, onEmpresasChange }) {
     if (empList.some(e => e.nombre.toLowerCase() === nombre.toLowerCase())) return
     setGuardandoEmp(true)
     const { data, error } = await supabase
-      .from('empresas')
-      .insert({ nombre, tarifa_persona: parseFloat(nuevaEmpTarifa) || 0 })
-      .select()
-      .single()
+      .from('empresas').insert({ nombre }).select().single()
     setGuardandoEmp(false)
     if (error) { alert('Error al guardar empresa: ' + error.message); return }
-    setEmpList(prev => [...prev, data])
+    const newList = [...empList, data]
+    setEmpList(newList)
+    onEmpresasChange(newList)
     setNuevaEmpNombre('')
-    setNuevaEmpTarifa('')
-  }
-
-  const actualizarTarifa = async (id, tarifa) => {
-    setEmpList(prev => prev.map(e => e.id === id ? { ...e, tarifa_persona: tarifa } : e))
-    await supabase.from('empresas').update({ tarifa_persona: tarifa }).eq('id', id)
   }
 
   const eliminarEmpresa = async (id) => {
     if (!confirm('¿Eliminar esta empresa? Las habitaciones asignadas quedarán sin empresa.')) return
     const { error } = await supabase.from('empresas').delete().eq('id', id)
     if (error) { alert('Error al eliminar: ' + error.message); return }
-    setEmpList(prev => prev.filter(e => e.id !== id))
+    const newList = empList.filter(e => e.id !== id)
+    setEmpList(newList)
+    onEmpresasChange(newList)
   }
 
   const guardar = () => {
     localStorage.setItem('hm_desayuno', String(precioDesayuno))
     localStorage.setItem('hm_precios', JSON.stringify(preciosHab))
     localStorage.setItem('hm_tipos_numero', JSON.stringify(tiposPorNumero))
-    onEmpresasChange(empList)
     onSaved?.()
     onClose()
   }
@@ -262,19 +233,12 @@ function SettingsModal({ onClose, onSaved, empresas, onEmpresasChange }) {
 
         {/* ── PERFIL EMPRESA ── */}
         <div className="border-t border-gray-100 pt-5 mb-6">
-          <p className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-3">Perfil Empresa</p>
+          <p className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">Perfil Empresa</p>
+          <p className="text-xs text-gray-400 mb-3">La tarifa por persona se define en cada habitación al asignarle empresa.</p>
           <div className="space-y-2 mb-3">
             {empList.map(emp => (
               <div key={emp.id} className="flex items-center gap-2 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
                 <span className="flex-1 text-sm font-medium text-[#224258] truncate">{emp.nombre}</span>
-                <div className="flex items-center border border-gray-200 rounded overflow-hidden bg-white">
-                  <span className="px-1.5 text-xs text-gray-400 bg-gray-50 border-r border-gray-200 py-1">$/p</span>
-                  <input type="number"
-                    className="w-20 px-2 py-1 text-xs text-gray-900 focus:outline-none"
-                    value={emp.tarifa_persona || ''}
-                    placeholder="0"
-                    onChange={e => actualizarTarifa(emp.id, parseFloat(e.target.value) || 0)} />
-                </div>
                 <button onClick={() => eliminarEmpresa(emp.id)}
                   className="text-gray-300 hover:text-red-400 transition text-lg leading-none shrink-0">×</button>
               </div>
@@ -290,14 +254,6 @@ function SettingsModal({ onClose, onSaved, empresas, onEmpresasChange }) {
               value={nuevaEmpNombre}
               onChange={e => setNuevaEmpNombre(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && agregarEmpresa()} />
-            <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden w-24">
-              <span className="px-1.5 text-xs text-gray-400 bg-gray-50 border-r border-gray-200 py-1.5">$/p</span>
-              <input type="number"
-                className="flex-1 px-2 py-1.5 text-sm text-gray-900 focus:outline-none"
-                placeholder="0"
-                value={nuevaEmpTarifa}
-                onChange={e => setNuevaEmpTarifa(e.target.value)} />
-            </div>
             <button onClick={agregarEmpresa} disabled={guardandoEmp}
               className="bg-[#224258] text-white rounded-lg px-3 py-1.5 text-sm font-medium hover:bg-[#1a3447] transition disabled:opacity-50">
               {guardandoEmp ? '…' : 'Agregar'}
@@ -337,6 +293,7 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
     desayunos_overrides: {},
     empresa_id: null,
     personas_empresa: 0,
+    tarifa_empresa_hab: 0,
     ...hab,
     precio_base: precioBase,
   })
@@ -346,29 +303,23 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
 
   const esReservado = form.estado === 'reservado'
   const esOcupado = form.estado === 'ocupado'
-  const esLibre = form.estado === 'libre'
   const esConfirmarSalida = form.estado === 'confirmar_salida'
   const mostrarFormulario = esReservado || esOcupado || esConfirmarSalida
 
-  const empresaActual = empresas.find(e => e.id === form.empresa_id) || null
-  const m = calcMontos(form, precioDesayuno, empresaActual)
+  const m = calcMontos(form, precioDesayuno)
+  const tieneEmpresa = !!form.empresa_id
 
   const set = (field, value) => {
     setForm(prev => {
       const u = { ...prev, [field]: value }
-      if (field === 'estado' && value === 'libre') {
-        u.fecha_inicio = null
-        u.fecha_fin = null
-      }
+      if (field === 'estado' && value === 'libre') { u.fecha_inicio = null; u.fecha_fin = null }
       if (field === 'estado_pago') {
-        if (['no_abonado', 'no_pagado', 'pago_total'].includes(value)) {
-          u.abono = 0; u.monto_pagado = 0
-        }
+        if (['no_abonado', 'no_pagado', 'pago_total'].includes(value)) { u.abono = 0; u.monto_pagado = 0 }
         if (value === 'abonado') u.monto_pagado = 0
         if (value === 'pagado') u.abono = 0
         if (value === 'pago_parcial') u.abono = 0
       }
-      if (field === 'empresa_id' && !value) u.personas_empresa = 0
+      if (field === 'empresa_id' && !value) { u.personas_empresa = 0; u.tarifa_empresa_hab = 0 }
       return u
     })
   }
@@ -403,8 +354,6 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
     no_pagado: 'No pagado', pago_parcial: 'Pago parcial', pago_total: 'Pago total',
   }
 
-  const tieneEmpresa = !!form.empresa_id && !!empresaActual
-
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl w-full max-w-md shadow-xl overflow-y-auto max-h-[92vh]">
@@ -432,7 +381,7 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
             </select>
           </div>
 
-          {/* Acción contextual */}
+          {/* Acciones contextuales */}
           {esReservado && (
             <button onClick={llegoReserva}
               className="w-full py-2.5 rounded-xl text-sm font-semibold transition"
@@ -450,20 +399,26 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
 
           {/* ── EMPRESA ── */}
           {mostrarFormulario && (
-            <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 space-y-2">
+            <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 space-y-3">
               <label className="flex items-center gap-2 cursor-pointer select-none">
                 <input type="checkbox"
-                  checked={!!form.empresa_id}
+                  checked={tieneEmpresa}
                   onChange={e => {
-                    if (!e.target.checked) set('empresa_id', null)
-                    else if (empresas.length > 0) set('empresa_id', empresas[0].id)
+                    if (!e.target.checked) {
+                      set('empresa_id', null)
+                    } else if (empresas.length > 0) {
+                      set('empresa_id', empresas[0].id)
+                    } else {
+                      alert('Primero agrega una empresa en Configuración.')
+                    }
                   }}
                   className="w-4 h-4 accent-[#224258]" />
-                <span className="text-sm font-medium text-[#224258]">Empresa</span>
+                <span className="text-sm font-semibold text-[#224258]">Empresa</span>
               </label>
 
-              {form.empresa_id && (
+              {tieneEmpresa && empresas.length > 0 && (
                 <>
+                  {/* Selector de empresa */}
                   <select
                     className="w-full border border-blue-200 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none"
                     value={form.empresa_id || ''}
@@ -473,14 +428,22 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
                     ))}
                   </select>
 
-                  {empresaActual && (
-                    <p className="text-xs text-blue-500">
-                      Tarifa: ${(empresaActual.tarifa_persona || 0).toLocaleString('es-CL')} por persona/noche
-                    </p>
-                  )}
-
+                  {/* Tarifa por persona — se define aquí, en esta habitación */}
                   <div>
-                    <label className="block mb-1 text-xs text-gray-500">Personas en esta habitación</label>
+                    <label className="block mb-1 text-xs text-blue-600 font-medium">Tarifa por persona (esta habitación)</label>
+                    <div className="flex items-center border border-blue-200 rounded-lg overflow-hidden bg-white">
+                      <span className="px-3 text-sm text-gray-400 bg-gray-50 border-r border-blue-100 py-2">$</span>
+                      <input type="number"
+                        className="flex-1 px-3 py-2 text-sm text-gray-900 focus:outline-none"
+                        placeholder="0"
+                        value={form.tarifa_empresa_hab || ''}
+                        onChange={e => set('tarifa_empresa_hab', parseFloat(e.target.value) || 0)} />
+                    </div>
+                  </div>
+
+                  {/* Cantidad de personas */}
+                  <div>
+                    <label className="block mb-1.5 text-xs text-blue-600 font-medium">Personas en esta habitación</label>
                     <div className="flex items-center gap-3">
                       <button
                         onClick={() => set('personas_empresa', Math.max(0, (form.personas_empresa || 0) - 1))}
@@ -489,9 +452,9 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
                       <button
                         onClick={() => set('personas_empresa', (form.personas_empresa || 0) + 1)}
                         className="w-8 h-8 rounded-lg border border-gray-200 bg-white text-gray-500 hover:bg-gray-100 text-lg font-medium flex items-center justify-center transition">+</button>
-                      {empresaActual && (form.personas_empresa || 0) > 0 && (
-                        <span className="text-xs text-gray-400 ml-1">
-                          ${((form.personas_empresa || 0) * (empresaActual.tarifa_persona || 0)).toLocaleString('es-CL')}/noche
+                      {(form.personas_empresa || 0) > 0 && (form.tarifa_empresa_hab || 0) > 0 && (
+                        <span className="text-xs text-blue-500 ml-1">
+                          ${((form.personas_empresa || 0) * (form.tarifa_empresa_hab || 0)).toLocaleString('es-CL')}/noche
                         </span>
                       )}
                     </div>
@@ -499,8 +462,8 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
                 </>
               )}
 
-              {form.empresa_id && empresas.length === 0 && (
-                <p className="text-xs text-gray-400">Sin empresas registradas. Agrega una en Configuración.</p>
+              {tieneEmpresa && empresas.length === 0 && (
+                <p className="text-xs text-gray-400">Sin empresas. Agrega una en Configuración.</p>
               )}
             </div>
           )}
@@ -510,8 +473,7 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
             <div className="bg-gray-50 rounded-xl p-3 space-y-2">
               <div className="flex gap-1 mb-1">
                 {['inicio', 'fin'].map(fase => (
-                  <button key={fase}
-                    onClick={() => setFechaFase(fase)}
+                  <button key={fase} onClick={() => setFechaFase(fase)}
                     className={`flex-1 py-1.5 rounded-lg text-xs font-medium border transition ${
                       fechaFase === fase
                         ? 'bg-white border-gray-300 text-gray-800 shadow-sm'
@@ -540,10 +502,7 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
                   </div>
                 )}
               </div>
-              <input
-                key={fechaFase}
-                type="date"
-                autoFocus
+              <input key={fechaFase} type="date" autoFocus
                 className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-gray-900 bg-white focus:outline-none"
                 value={fechaFase === 'inicio' ? (form.fecha_inicio || '') : (form.fecha_fin || '')}
                 min={fechaFase === 'fin' ? (form.fecha_inicio || undefined) : undefined}
@@ -551,8 +510,7 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
                   const val = e.target.value
                   if (fechaFase === 'inicio') { set('fecha_inicio', val); setFechaFase('fin') }
                   else set('fecha_fin', val)
-                }}
-              />
+                }} />
             </div>
           )}
 
@@ -586,8 +544,7 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
                 <div className="space-y-1.5 pt-1">
                   <p className="text-xs text-gray-400">Ajustar por día</p>
                   {m.detalleDesayunos.map(({ dia, cantidad }) => (
-                    <div key={dia}
-                      className="flex items-center justify-between bg-white border border-gray-200 rounded-lg px-2.5 py-1.5">
+                    <div key={dia} className="flex items-center justify-between bg-white border border-gray-200 rounded-lg px-2.5 py-1.5">
                       <span className="text-sm text-gray-600">{fmtFecha(dia)}</span>
                       <div className="flex items-center gap-2">
                         <button onClick={() => ajustarDesayunoDia(dia, -1)}
@@ -702,9 +659,9 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
           {/* Desglose */}
           {mostrarFormulario && (
             <div className="bg-gray-50 rounded-xl p-4 text-sm space-y-2">
-              {tieneEmpresa && m.personas > 0 ? (
+              {tieneEmpresa && m.personas > 0 && m.tarifaHab > 0 ? (
                 <div className="flex justify-between text-blue-600">
-                  <span>{m.personas} pers. × ${m.tarifaEmpresa.toLocaleString('es-CL')} × {Math.max(m.noches,1)} noches</span>
+                  <span>{m.personas} pers. × ${m.tarifaHab.toLocaleString('es-CL')} × {Math.max(m.noches,1)} noches</span>
                   <span>${m.precioHab.toLocaleString('es-CL')}</span>
                 </div>
               ) : (
@@ -722,8 +679,7 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
                 </div>
               )}
               <div className="flex justify-between text-gray-600 font-medium border-t border-gray-200 pt-2">
-                <span>Subtotal bruto</span>
-                <span>${m.subtotal.toLocaleString('es-CL')}</span>
+                <span>Subtotal bruto</span><span>${m.subtotal.toLocaleString('es-CL')}</span>
               </div>
               <div className="flex justify-between text-gray-500">
                 <span>IVA 19%{form.no_cobrar_iva ? ' — exento' : ''}</span>
@@ -732,8 +688,7 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
                 </span>
               </div>
               <div className="flex justify-between font-semibold text-[#224258] border-t border-gray-200 pt-2">
-                <span>Total</span>
-                <span>${m.total.toLocaleString('es-CL')}</span>
+                <span>Total</span><span>${m.total.toLocaleString('es-CL')}</span>
               </div>
               {esReservado && form.estado_pago === 'abonado' && m.abono > 0 && (
                 <>
@@ -753,8 +708,7 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
                   </div>
                   {m.diferenciaPagadoReservado !== 0 ? (
                     <div className="flex justify-between font-medium text-amber-600">
-                      <span>Diferencia</span>
-                      <span>${Math.abs(m.diferenciaPagadoReservado).toLocaleString('es-CL')}</span>
+                      <span>Diferencia</span><span>${Math.abs(m.diferenciaPagadoReservado).toLocaleString('es-CL')}</span>
                     </div>
                   ) : (
                     <div className="flex justify-between font-medium text-emerald-600">
@@ -777,7 +731,6 @@ function RoomModal({ hab, onClose, onSave, empresas }) {
             </div>
           )}
 
-          {/* Botones */}
           <div className="flex gap-2 pb-1">
             <button onClick={onClose}
               className="flex-1 border border-gray-200 rounded-xl py-2.5 text-sm text-gray-600 hover:bg-gray-50 transition">
@@ -803,8 +756,10 @@ function SiguientePanel({ habitaciones, onSelectHab, empresas, cobrosEmpresa, on
   const settings = loadSettings()
   const precioDesayuno = settings.precioDesayuno
 
-  // Navegación de fecha para empresas
+  // Fecha de navegación para el panel de empresa
   const [fechaEmp, setFechaEmp] = useState(hoy)
+  // Días seleccionados para agrupación (Set de strings ISO)
+  const [diasSeleccionados, setDiasSeleccionados] = useState(new Set())
   const [expandedEmpresas, setExpandedEmpresas] = useState({})
 
   const reservas = habitaciones
@@ -835,63 +790,84 @@ function SiguientePanel({ habitaciones, onSelectHab, empresas, cobrosEmpresa, on
   const totalDesayunos = conDesayuno.reduce((sum, h) => sum + h.cantidad, 0)
   const habsConDesayunoLabel = conDesayuno.map(h => h.numero).join('-')
 
-  // ── Empresas por día ──
-  // Para la fecha seleccionada, agrupa habitaciones activas con empresa
-  const habsEmpresaFecha = habitaciones.filter(h => {
-    if (!h.empresa_id) return false
-    if (h.estado === 'libre') return false
-    if (!h.fecha_inicio || !h.fecha_fin) return false
-    return fechaEmp >= h.fecha_inicio && fechaEmp <= h.fecha_fin
-  })
-
-  // Agrupa por empresa
-  const empresasPorDia = empresas.map(emp => {
-    const habs = habsEmpresaFecha.filter(h => h.empresa_id === emp.id)
-    if (habs.length === 0) return null
-
-    const totalPersonas = habs.reduce((s, h) => s + (h.personas_empresa || 0), 0)
-
-    // Desayunos de empresa ese día
-    const totalDesayunosEmp = habs.reduce((s, h) => {
-      const dias = diasDesayuno(h.fecha_inicio, h.fecha_fin, h.contar_dia_ingreso)
-      if (!dias.includes(fechaEmp)) return s
-      const overrides = h.desayunos_overrides || {}
-      const cant = overrides[fechaEmp] !== undefined ? overrides[fechaEmp] : (h.desayunos || 0)
-      return s + cant
-    }, 0)
-
-    // Monto del día: personas × tarifa (sin IVA, solo alojamiento)
-    const montoAlojDia = habs.reduce((s, h) => {
-      return s + (h.personas_empresa || 0) * (emp.tarifa_persona || 0)
-    }, 0)
-    const montoDesayunosDia = totalDesayunosEmp * precioDesayuno
-    const montoBrutoDia = montoAlojDia + montoDesayunosDia
-    const ivaDia = montoBrutoDia * 0.19
-    const montoTotalDia = Math.round(montoBrutoDia + ivaDia)
-
-    // Desglose por habitación
-    const detalleHabs = habs.map(h => {
-      const noches = calcNochesFechas(h.fecha_inicio, h.fecha_fin)
-      const personas = h.personas_empresa || 0
-      const montoDiaHab = personas * (emp.tarifa_persona || 0)
-      const diasDes = diasDesayuno(h.fecha_inicio, h.fecha_fin, h.contar_dia_ingreso)
-      const overrides = h.desayunos_overrides || {}
-      const desDia = diasDes.includes(fechaEmp)
-        ? (overrides[fechaEmp] !== undefined ? overrides[fechaEmp] : (h.desayunos || 0))
-        : 0
-      return { numero: h.numero, tipo: h.tipo, personas, montoDiaHab, desDia, noches }
+  // ── Datos de empresa para un día dado ──
+  function datosEmpresaParaDia(fecha) {
+    const habsActivas = habitaciones.filter(h => {
+      if (!h.empresa_id || h.estado === 'libre') return false
+      if (!h.fecha_inicio || !h.fecha_fin) return false
+      return fecha >= h.fecha_inicio && fecha <= h.fecha_fin
     })
+    return empresas.map(emp => {
+      const habs = habsActivas.filter(h => h.empresa_id === emp.id)
+      if (habs.length === 0) return null
+      const totalPersonas = habs.reduce((s, h) => s + (h.personas_empresa || 0), 0)
+      const totalDes = habs.reduce((s, h) => {
+        const dias = diasDesayuno(h.fecha_inicio, h.fecha_fin, h.contar_dia_ingreso)
+        if (!dias.includes(fecha)) return s
+        const overrides = h.desayunos_overrides || {}
+        return s + (overrides[fecha] !== undefined ? overrides[fecha] : (h.desayunos || 0))
+      }, 0)
+      const montoAloj = habs.reduce((s, h) =>
+        s + (h.personas_empresa || 0) * (h.tarifa_empresa_hab || 0), 0)
+      const montoDes = totalDes * precioDesayuno
+      const bruto = montoAloj + montoDes
+      const total = Math.round(bruto * 1.19)
+      const detalleHabs = habs.map(h => {
+        const dias = diasDesayuno(h.fecha_inicio, h.fecha_fin, h.contar_dia_ingreso)
+        const overrides = h.desayunos_overrides || {}
+        const desDia = dias.includes(fecha)
+          ? (overrides[fecha] !== undefined ? overrides[fecha] : (h.desayunos || 0))
+          : 0
+        return {
+          numero: h.numero, tipo: h.tipo,
+          personas: h.personas_empresa || 0,
+          tarifa: h.tarifa_empresa_hab || 0,
+          montoAlojDia: (h.personas_empresa || 0) * (h.tarifa_empresa_hab || 0),
+          desDia,
+        }
+      })
+      return { emp, habs, totalPersonas, totalDes, bruto, total, detalleHabs }
+    }).filter(Boolean)
+  }
 
-    const cobroKey = `${emp.id}_${fechaEmp}`
-    const cobrado = cobrosEmpresa[cobroKey] || false
+  const empresasDia = datosEmpresaParaDia(fechaEmp)
 
-    return { emp, habs, totalPersonas, totalDesayunosEmp, montoBrutoDia, montoTotalDia, detalleHabs, cobroKey, cobrado }
+  // Días seleccionados: acumulado multi-empresa
+  const toggleDia = (fecha) => {
+    setDiasSeleccionados(prev => {
+      const next = new Set(prev)
+      if (next.has(fecha)) next.delete(fecha)
+      else next.add(fecha)
+      return next
+    })
+  }
+
+  // Para cada empresa, acumular sus días seleccionados
+  const resumenSeleccion = empresas.map(emp => {
+    if (diasSeleccionados.size === 0) return null
+    const diasArr = [...diasSeleccionados].sort()
+    let totalPersonasDias = 0, totalDesDias = 0, totalBruto = 0, totalConIva = 0
+    const detallesPorDia = []
+    for (const fecha of diasArr) {
+      const datos = datosEmpresaParaDia(fecha)
+      const empData = datos.find(d => d.emp.id === emp.id)
+      if (!empData) continue
+      totalPersonasDias += empData.totalPersonas
+      totalDesDias += empData.totalDes
+      totalBruto += empData.bruto
+      totalConIva += empData.total
+      detallesPorDia.push({ fecha, ...empData })
+    }
+    if (detallesPorDia.length === 0) return null
+    return { emp, diasArr, detallesPorDia, totalPersonasDias, totalDesDias, totalBruto, totalConIva }
   }).filter(Boolean)
 
-  const toggleExpanded = (id) => setExpandedEmpresas(prev => ({ ...prev, [id]: !prev[id] }))
+  const haySeleccion = diasSeleccionados.size > 0 && resumenSeleccion.length > 0
 
-  const fmtFechaNav = (iso) => {
-    const [y, m, d] = iso.split('-')
+  const toggleExpanded = (key) => setExpandedEmpresas(prev => ({ ...prev, [key]: !prev[key] }))
+
+  const fmtNav = (iso) => {
+    const [, m, d] = iso.split('-')
     return `${d}/${m}`
   }
 
@@ -964,87 +940,156 @@ function SiguientePanel({ habitaciones, onSelectHab, empresas, cobrosEmpresa, on
       {/* ── EMPRESAS POR DÍA ── */}
       {empresas.length > 0 && (
         <div className="border border-blue-100 rounded-xl overflow-hidden">
-          {/* Header con navegación de fecha */}
-          <div className="bg-blue-50 px-3 py-2.5 flex items-center justify-between">
-            <p className="text-xs font-semibold text-[#224258] uppercase tracking-wider">Empresas por día</p>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setFechaEmp(sumarDias(fechaEmp, -1))}
-                className="w-6 h-6 rounded flex items-center justify-center text-[#224258] hover:bg-blue-100 transition text-sm font-bold">‹</button>
-              <span className="text-xs font-semibold text-[#224258] min-w-[40px] text-center">
-                {fechaEmp === hoy ? 'Hoy' : fmtFechaNav(fechaEmp)}
-              </span>
-              <button
-                onClick={() => setFechaEmp(sumarDias(fechaEmp, 1))}
-                className="w-6 h-6 rounded flex items-center justify-center text-[#224258] hover:bg-blue-100 transition text-sm font-bold">›</button>
+
+          {/* Header con navegación + instrucción de selección */}
+          <div className="bg-blue-50 px-3 py-2.5">
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-xs font-semibold text-[#224258] uppercase tracking-wider">Empresas por día</p>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setFechaEmp(sumarDias(fechaEmp, -1))}
+                  className="w-6 h-6 rounded flex items-center justify-center text-[#224258] hover:bg-blue-100 transition font-bold">‹</button>
+                <span className="text-xs font-semibold text-[#224258] min-w-[42px] text-center">
+                  {fechaEmp === hoy ? 'Hoy' : fmtNav(fechaEmp)}
+                </span>
+                <button onClick={() => setFechaEmp(sumarDias(fechaEmp, 1))}
+                  className="w-6 h-6 rounded flex items-center justify-center text-[#224258] hover:bg-blue-100 transition font-bold">›</button>
+              </div>
             </div>
+            {/* Checkbox del día para selección acumulada */}
+            <label className="flex items-center gap-1.5 cursor-pointer select-none">
+              <input type="checkbox"
+                checked={diasSeleccionados.has(fechaEmp)}
+                onChange={() => toggleDia(fechaEmp)}
+                className="w-3.5 h-3.5 accent-[#224258]" />
+              <span className="text-[10px] text-[#224258]/70">
+                {diasSeleccionados.has(fechaEmp) ? 'Día incluido en agrupación' : 'Incluir este día en agrupación'}
+              </span>
+            </label>
           </div>
 
-          {empresasPorDia.length === 0 ? (
+          {/* Lista empresas para el día navegado */}
+          {empresasDia.length === 0 ? (
             <div className="px-3 py-3">
               <p className="text-xs text-gray-300 italic">Sin empresas activas este día.</p>
             </div>
           ) : (
             <div className="divide-y divide-blue-50">
-              {empresasPorDia.map(({ emp, habs, totalPersonas, totalDesayunosEmp, montoBrutoDia, montoTotalDia, detalleHabs, cobroKey, cobrado }) => (
-                <div key={emp.id} className={`transition ${cobrado ? 'bg-emerald-50/60' : 'bg-white'}`}>
-                  {/* Fila resumen empresa */}
-                  <div className="px-3 py-2.5">
-                    <div className="flex items-start justify-between gap-2">
-                      <button
-                        onClick={() => toggleExpanded(emp.id)}
-                        className="flex items-center gap-1.5 text-left flex-1 min-w-0">
-                        <ChevronIcon open={!!expandedEmpresas[emp.id]} />
-                        <span className="text-sm font-semibold text-[#224258] truncate">{emp.nombre}</span>
-                      </button>
-                      {/* Checkbox cobrado */}
-                      <label className="flex items-center gap-1 cursor-pointer shrink-0" title="Marcar como cobrado">
-                        <input type="checkbox"
-                          checked={cobrado}
-                          onChange={() => onToggleCobro(cobroKey)}
-                          className="w-3.5 h-3.5 accent-emerald-500" />
-                        <span className="text-[10px] text-gray-400">Cobrado</span>
-                      </label>
+              {empresasDia.map(({ emp, habs, totalPersonas, totalDes, bruto, total, detalleHabs }) => {
+                const cobroKey = `${emp.id}_${fechaEmp}`
+                const cobrado = cobrosEmpresa[cobroKey] || false
+                const expandKey = `dia_${emp.id}_${fechaEmp}`
+                return (
+                  <div key={emp.id} className={`transition ${cobrado ? 'bg-emerald-50/60' : 'bg-white'}`}>
+                    <div className="px-3 py-2.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <button onClick={() => toggleExpanded(expandKey)}
+                          className="flex items-center gap-1.5 text-left flex-1 min-w-0">
+                          <ChevronIcon open={!!expandedEmpresas[expandKey]} />
+                          <span className="text-sm font-semibold text-[#224258] truncate">{emp.nombre}</span>
+                        </button>
+                        <label className="flex items-center gap-1 cursor-pointer shrink-0">
+                          <input type="checkbox"
+                            checked={cobrado}
+                            onChange={() => onToggleCobro(cobroKey)}
+                            className="w-3.5 h-3.5 accent-emerald-500" />
+                          <span className="text-[10px] text-gray-400">Cobrado</span>
+                        </label>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-500 pl-5">
+                        <span>{habs.length} hab. · {totalPersonas} pers.</span>
+                        {totalDes > 0 && <span>{totalDes} des.</span>}
+                        <span className="font-semibold text-[#224258]">${total.toLocaleString('es-CL')}</span>
+                      </div>
                     </div>
-                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-500 pl-5">
-                      <span>{habs.length} hab. · {totalPersonas} pers.</span>
-                      {totalDesayunosEmp > 0 && <span>{totalDesayunosEmp} des.</span>}
-                      <span className="font-semibold text-[#224258]">${montoTotalDia.toLocaleString('es-CL')}</span>
-                    </div>
-                  </div>
-
-                  {/* Desglose por habitación (expandible) */}
-                  {expandedEmpresas[emp.id] && (
-                    <div className="px-3 pb-2.5 space-y-1.5 border-t border-blue-50 pt-2">
-                      {detalleHabs.map(dh => (
-                        <div key={dh.numero}
-                          className="bg-blue-50/60 rounded-lg px-2.5 py-1.5 text-[11px] text-gray-600">
-                          <div className="flex justify-between">
-                            <span className="font-medium">Hab. {dh.numero}{dh.tipo ? ` — ${dh.tipo}` : ''}</span>
-                            <span className="font-semibold text-[#224258]">${dh.montoDiaHab.toLocaleString('es-CL')}</span>
+                    {expandedEmpresas[expandKey] && (
+                      <div className="px-3 pb-2.5 space-y-1.5 border-t border-blue-50 pt-2">
+                        {detalleHabs.map(dh => (
+                          <div key={dh.numero} className="bg-blue-50/60 rounded-lg px-2.5 py-1.5 text-[11px] text-gray-600">
+                            <div className="flex justify-between">
+                              <span className="font-medium">Hab. {dh.numero}{dh.tipo ? ` — ${dh.tipo}` : ''}</span>
+                              <span className="font-semibold text-[#224258]">${dh.montoAlojDia.toLocaleString('es-CL')}</span>
+                            </div>
+                            <div className="flex gap-3 mt-0.5 text-gray-400">
+                              <span>{dh.personas} pers. × ${dh.tarifa.toLocaleString('es-CL')}</span>
+                              {dh.desDia > 0 && <span>{dh.desDia} des.</span>}
+                            </div>
                           </div>
-                          <div className="flex gap-3 mt-0.5 text-gray-400">
-                            <span>{dh.personas} pers. × ${(emp.tarifa_persona || 0).toLocaleString('es-CL')}</span>
-                            {dh.desDia > 0 && <span>{dh.desDia} des.</span>}
+                        ))}
+                        <div className="flex justify-between text-[11px] text-gray-400 pt-1 border-t border-blue-100">
+                          <span>Subtotal bruto</span><span>${bruto.toLocaleString('es-CL')}</span>
+                        </div>
+                        <div className="flex justify-between text-[11px] text-gray-400">
+                          <span>IVA 19%</span><span>${Math.round(bruto * 0.19).toLocaleString('es-CL')}</span>
+                        </div>
+                        <div className="flex justify-between text-[11px] font-semibold text-[#224258]">
+                          <span>Total día</span><span>${total.toLocaleString('es-CL')}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* ── RESUMEN AGRUPADO (días seleccionados) ── */}
+          {haySeleccion && (
+            <div className="border-t-2 border-blue-200 bg-blue-50/80">
+              <div className="px-3 py-2.5">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-bold text-[#224258] uppercase tracking-wider">
+                    Agrupación · {diasSeleccionados.size} {diasSeleccionados.size === 1 ? 'día' : 'días'}
+                  </p>
+                  <button onClick={() => setDiasSeleccionados(new Set())}
+                    className="text-[10px] text-gray-400 hover:text-red-400 transition">
+                    Limpiar
+                  </button>
+                </div>
+                <p className="text-[10px] text-gray-400 mb-2">
+                  {[...diasSeleccionados].sort().map(fmtNav).join(' · ')}
+                </p>
+                {resumenSeleccion.map(({ emp, diasArr, detallesPorDia, totalDesDias, totalBruto, totalConIva }) => {
+                  const expandKey = `grupo_${emp.id}`
+                  return (
+                    <div key={emp.id} className="mb-2 bg-white rounded-xl border border-blue-100 overflow-hidden">
+                      <button onClick={() => toggleExpanded(expandKey)}
+                        className="w-full flex items-center justify-between px-3 py-2 text-left">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <ChevronIcon open={!!expandedEmpresas[expandKey]} />
+                          <span className="text-sm font-semibold text-[#224258] truncate">{emp.nombre}</span>
+                        </div>
+                        <span className="text-sm font-bold text-[#224258] shrink-0 ml-2">
+                          ${totalConIva.toLocaleString('es-CL')}
+                        </span>
+                      </button>
+                      {expandedEmpresas[expandKey] && (
+                        <div className="px-3 pb-3 space-y-1.5 border-t border-blue-50">
+                          {detallesPorDia.map(({ fecha, totalPersonas, totalDes, bruto, total }) => (
+                            <div key={fecha} className="flex items-center justify-between text-[11px] pt-1.5">
+                              <div className="text-gray-500">
+                                <span className="font-medium">{fmtNav(fecha)}</span>
+                                <span className="ml-2 text-gray-400">{totalPersonas} pers.{totalDes > 0 ? ` · ${totalDes} des.` : ''}</span>
+                              </div>
+                              <span className="font-semibold text-gray-700">${total.toLocaleString('es-CL')}</span>
+                            </div>
+                          ))}
+                          <div className="border-t border-blue-100 pt-1.5 space-y-0.5">
+                            <div className="flex justify-between text-[11px] text-gray-400">
+                              <span>Subtotal bruto</span><span>${totalBruto.toLocaleString('es-CL')}</span>
+                            </div>
+                            <div className="flex justify-between text-[11px] text-gray-400">
+                              <span>IVA 19%</span><span>${Math.round(totalBruto * 0.19).toLocaleString('es-CL')}</span>
+                            </div>
+                            <div className="flex justify-between text-[11px] font-bold text-[#224258]">
+                              <span>Total {diasArr.length} días</span><span>${totalConIva.toLocaleString('es-CL')}</span>
+                            </div>
                           </div>
                         </div>
-                      ))}
-                      <div className="flex justify-between text-[11px] text-gray-400 pt-1 border-t border-blue-100">
-                        <span>Subtotal bruto</span>
-                        <span>${montoBrutoDia.toLocaleString('es-CL')}</span>
-                      </div>
-                      <div className="flex justify-between text-[11px] text-gray-400">
-                        <span>IVA 19%</span>
-                        <span>${Math.round(montoBrutoDia * 0.19).toLocaleString('es-CL')}</span>
-                      </div>
-                      <div className="flex justify-between text-[11px] font-semibold text-[#224258]">
-                        <span>Total día</span>
-                        <span>${montoTotalDia.toLocaleString('es-CL')}</span>
-                      </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))}
+                  )
+                })}
+              </div>
             </div>
           )}
         </div>
@@ -1080,10 +1125,8 @@ function ConfirmSalidaMenu({ hab, onClose, onConfirm }) {
 
 // ── TARJETA HABITACIÓN ───────────────────────────────────────────────────────
 function PagoIcon({ hab }) {
-  const ep = hab.estado_pago
-  const est = hab.estado
+  const ep = hab.estado_pago; const est = hab.estado
   if (est === 'libre') return null
-
   const Cruz = ({ title }) => (
     <span className="w-4 h-4 rounded-full bg-red-400 flex items-center justify-center" title={title}>
       <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round">
@@ -1101,7 +1144,6 @@ function PagoIcon({ hab }) {
       <CheckIcon className="text-white" />
     </span>
   )
-
   if (est === 'reservado') {
     if (ep === 'no_abonado') return <Cruz title="No abonado" />
     if (ep === 'abonado') return <Tic color="bg-amber-400" title="Abonado" />
@@ -1117,15 +1159,12 @@ function PagoIcon({ hab }) {
   return null
 }
 
-function calcSaldoCard(hab, settings, empresa) {
+function calcSaldoCard(hab, settings) {
   const precioBase = settings.preciosHab[hab.tipo] || hab.precio_base || 0
-  const m = calcMontos({ ...hab, precio_base: precioBase }, settings.precioDesayuno, empresa)
+  const m = calcMontos({ ...hab, precio_base: precioBase }, settings.precioDesayuno)
   const { total, subtotal, totalUnidadesDesayuno } = m
-
   const ep = hab.estado_pago
-  let saldo = total
-  let pagadoTotal = false
-
+  let saldo = total, pagadoTotal = false
   if (hab.estado === 'reservado') {
     if (ep === 'abonado' && (hab.abono || 0) > 0) saldo = total - (hab.abono || 0)
     if (ep === 'pagado') {
@@ -1138,7 +1177,6 @@ function calcSaldoCard(hab, settings, empresa) {
     if (ep === 'pago_total') { saldo = 0; pagadoTotal = true }
     if (ep === 'pago_parcial' && (hab.monto_pagado || 0) > 0) saldo = total - (hab.monto_pagado || 0)
   }
-
   return { total, saldo, pagadoTotal, totalUnidadesDesayuno }
 }
 
@@ -1147,26 +1185,14 @@ function RoomCard({ hab, onClick, onConfirmSalida, empresas }) {
   const settings = loadSettings()
   const empresa = empresas.find(e => e.id === hab.empresa_id) || null
 
-  const bg = {
-    libre: 'bg-emerald-50', reservado: 'bg-amber-50',
-    ocupado: 'bg-red-50', confirmar_salida: 'bg-purple-50',
-  }
-  const ring = {
-    libre: 'border-emerald-100', reservado: 'border-amber-200',
-    ocupado: 'border-red-200', confirmar_salida: 'border-purple-300',
-  }
-  const dot = {
-    libre: 'bg-emerald-400', reservado: 'bg-amber-400',
-    ocupado: 'bg-red-500', confirmar_salida: 'bg-purple-500',
-  }
+  const bg = { libre: 'bg-emerald-50', reservado: 'bg-amber-50', ocupado: 'bg-red-50', confirmar_salida: 'bg-purple-50' }
+  const ring = { libre: 'border-emerald-100', reservado: 'border-amber-200', ocupado: 'border-red-200', confirmar_salida: 'border-purple-300' }
+  const dot = { libre: 'bg-emerald-400', reservado: 'bg-amber-400', ocupado: 'bg-red-500', confirmar_salida: 'bg-purple-500' }
 
-  const handleClick = () => {
-    if (hab.estado === 'confirmar_salida') setShowConfirm(true)
-    else onClick()
-  }
+  const handleClick = () => { if (hab.estado === 'confirmar_salida') setShowConfirm(true); else onClick() }
 
   const mostrarMontos = hab.estado === 'reservado' || hab.estado === 'ocupado' || hab.estado === 'confirmar_salida'
-  const { total, saldo, pagadoTotal, totalUnidadesDesayuno } = mostrarMontos ? calcSaldoCard(hab, settings, empresa) : {}
+  const { total, saldo, pagadoTotal, totalUnidadesDesayuno } = mostrarMontos ? calcSaldoCard(hab, settings) : {}
 
   return (
     <>
@@ -1190,13 +1216,10 @@ function RoomCard({ hab, onClick, onConfirmSalida, empresas }) {
         {hab.estado === 'confirmar_salida' && (
           <span className="text-[10px] text-purple-600 font-medium mt-0.5 leading-tight">Confirmar salida</span>
         )}
-
         {hab.estado !== 'libre' && hab.estado !== 'confirmar_salida' && hab.fecha_inicio && (
           <div className="mt-0.5 space-y-px">
             <p className="text-[10px] text-gray-400 leading-tight">✈ {fmtFecha(hab.fecha_inicio)}</p>
-            {hab.fecha_fin && (
-              <p className="text-[10px] text-gray-400 leading-tight">⬜ {fmtFecha(hab.fecha_fin)}</p>
-            )}
+            {hab.fecha_fin && <p className="text-[10px] text-gray-400 leading-tight">⬜ {fmtFecha(hab.fecha_fin)}</p>}
           </div>
         )}
 
@@ -1208,9 +1231,7 @@ function RoomCard({ hab, onClick, onConfirmSalida, empresas }) {
               <p className="text-[10px] text-gray-500 leading-tight">
                 <span className="text-gray-400">Saldo </span>
                 <span className="font-semibold text-gray-700">${saldo.toLocaleString('es-CL')}</span>
-                {saldo !== total && (
-                  <span className="text-gray-300"> /{total.toLocaleString('es-CL')}</span>
-                )}
+                {saldo !== total && <span className="text-gray-300"> /{total.toLocaleString('es-CL')}</span>}
               </p>
             )}
             {(totalUnidadesDesayuno || 0) > 0 && (
@@ -1235,7 +1256,6 @@ function RoomCard({ hab, onClick, onConfirmSalida, empresas }) {
 export default function App() {
   const [habitaciones, setHabitaciones] = useState([])
   const [empresas, setEmpresas] = useState([])
-  // cobrosEmpresa: { "empresa_id_fecha": true } — persiste en tabla cobros_empresa_dia
   const [cobrosEmpresa, setCobrosEmpresa] = useState({})
   const [selected, setSelected] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -1243,9 +1263,7 @@ export default function App() {
   const [showSiguiente, setShowSiguiente] = useState(false)
   const [settingsVersion, setSettingsVersion] = useState(0)
 
-  useEffect(() => {
-    document.title = 'Hotel Laraquete Reservas'
-  }, [])
+  useEffect(() => { document.title = 'Hotel Laraquete Reservas' }, [])
 
   useEffect(() => {
     fetchAll()
@@ -1287,76 +1305,74 @@ export default function App() {
   async function fetchCobros() {
     const { data } = await supabase.from('cobros_empresa_dia').select('*')
     const map = {}
-    for (const row of (data || [])) {
-      map[`${row.empresa_id}_${row.fecha}`] = row.cobrado
-    }
+    for (const row of (data || [])) map[`${row.empresa_id}_${row.fecha}`] = row.cobrado
     setCobrosEmpresa(map)
   }
 
   async function handleToggleCobro(cobroKey) {
-    // cobroKey = "empresa_id_yyyy-mm-dd"
-    const lastUnder = cobroKey.lastIndexOf('_')
-    const empresa_id = cobroKey.slice(0, lastUnder)
-    const fecha = cobroKey.slice(lastUnder + 1)
+    // cobroKey = "uuid_yyyy-mm-dd" — el uuid puede contener guiones, así que
+    // separamos por el último guion que antecede a la fecha (yyyy-mm-dd = 10 chars al final)
+    const fecha = cobroKey.slice(-10)
+    const empresa_id = cobroKey.slice(0, cobroKey.length - 11) // quitar "_yyyy-mm-dd"
     const actual = cobrosEmpresa[cobroKey] || false
     const nuevo = !actual
-
     setCobrosEmpresa(prev => ({ ...prev, [cobroKey]: nuevo }))
-
     const { error } = await supabase
       .from('cobros_empresa_dia')
       .upsert({ empresa_id, fecha, cobrado: nuevo }, { onConflict: 'empresa_id,fecha' })
-
     if (error) {
-      setCobrosEmpresa(prev => ({ ...prev, [cobroKey]: actual })) // revert
-      console.error('Error al guardar cobro:', error.message)
+      setCobrosEmpresa(prev => ({ ...prev, [cobroKey]: actual }))
+      console.error('Error cobro:', error.message)
     }
   }
 
   async function aplicarTransicionesAutomaticas(habs) {
     const nowSCL = nowSantiago()
-    const hora = nowSCL.getHours()
-    const minuto = nowSCL.getMinutes()
+    const hora = nowSCL.getHours(), minuto = nowSCL.getMinutes()
     const hoy = nowSCL.toISOString().split('T')[0]
     const esDespuesDe12 = hora > 12 || (hora === 12 && minuto >= 0)
-
     const vencidas = habs.filter(h => {
       if (h.estado !== 'ocupado' || !h.fecha_fin) return false
       if (h.fecha_fin < hoy) return true
       if (h.fecha_fin === hoy && esDespuesDe12) return true
       return false
     })
-    for (const h of vencidas) {
+    for (const h of vencidas)
       await supabase.from('habitaciones').update({ estado: 'confirmar_salida' }).eq('id', h.id)
-    }
-    if (vencidas.length > 0) {
+    if (vencidas.length > 0)
       setHabitaciones(prev => prev.map(h =>
         vencidas.some(v => v.id === h.id) ? { ...h, estado: 'confirmar_salida' } : h
       ))
-    }
   }
 
   async function handleSave(form) {
-    if (form._confirmar_salida) {
-      await handleConfirmSalida(form)
-      return
-    }
+    if (form._confirmar_salida) { await handleConfirmSalida(form); return }
 
     const settings = loadSettings()
-    const empresa = empresas.find(e => e.id === form.empresa_id) || null
-    const m = calcMontos(form, settings.precioDesayuno, empresa)
+    const m = calcMontos(form, settings.precioDesayuno)
 
     let saldoPendiente = false
-    if (form.estado === 'reservado' && form.estado_pago === 'pagado') {
+    if (form.estado === 'reservado' && form.estado_pago === 'pagado')
       saldoPendiente = m.subtotal !== (form.monto_pagado || 0)
-    }
 
     const diasValidos = new Set(m.dias)
     const overridesLimpios = Object.fromEntries(
       Object.entries(form.desayunos_overrides || {}).filter(([dia]) => diasValidos.has(dia))
     )
 
-    const payload = { ...form, desayunos_overrides: overridesLimpios, saldo_pendiente_pago: saldoPendiente }
+    // Validar que empresa_id existe en la lista cargada antes de guardar
+    // Si no, limpiar para evitar FK error
+    const empresaValida = form.empresa_id && empresas.some(e => e.id === form.empresa_id)
+    const empresaIdFinal = empresaValida ? form.empresa_id : null
+
+    const payload = {
+      ...form,
+      empresa_id: empresaIdFinal,
+      personas_empresa: empresaIdFinal ? (form.personas_empresa || 0) : 0,
+      tarifa_empresa_hab: empresaIdFinal ? (form.tarifa_empresa_hab || 0) : 0,
+      desayunos_overrides: overridesLimpios,
+      saldo_pendiente_pago: saldoPendiente,
+    }
     delete payload.tipo
     delete payload.precio_desayuno
     delete payload._confirmar_salida
@@ -1373,7 +1389,7 @@ export default function App() {
       desayunos: 0, contar_dia_ingreso: false, desayunos_overrides: {},
       no_cobrar_desayuno: false, no_cobrar_iva: false,
       estado_pago: 'no_abonado', abono: 0, monto_pagado: 0, saldo_pendiente_pago: false,
-      empresa_id: null, personas_empresa: 0,
+      empresa_id: null, personas_empresa: 0, tarifa_empresa_hab: 0,
     }).eq('id', hab.id)
     if (error) { alert('No se pudo confirmar la salida: ' + error.message); return }
     setSelected(null)
@@ -1396,15 +1412,14 @@ export default function App() {
     <div className="min-h-screen bg-gray-50">
       <header className="relative bg-[#224258] px-5 py-3 sticky top-0 z-30 shadow-sm">
         <div className="flex items-center justify-center gap-4">
-          <p className="text-[#DDC395] font-serif text-lg sm:text-xl font-semibold tracking-wide leading-tight hidden sm:block"
+          <p className="text-[#DDC395] text-lg sm:text-xl font-semibold tracking-wide leading-tight hidden sm:block"
             style={{ fontFamily: "'Georgia', 'Times New Roman', serif", letterSpacing: '0.04em' }}>
-            Hotel Laraquete<br /><span className="text-xs font-normal tracking-widest uppercase" style={{ fontFamily: 'inherit' }}>Reservas</span>
+            Hotel Laraquete<br /><span className="text-xs font-normal tracking-widest uppercase">Reservas</span>
           </p>
-          <img src="/logo-hotel-laraquete.png" alt="Hotel Laraquete"
-            className="h-10 sm:h-11 object-contain" />
-          <p className="text-[#DDC395] font-serif text-lg sm:text-xl font-semibold tracking-wide leading-tight sm:invisible"
+          <img src="/logo-hotel-laraquete.png" alt="Hotel Laraquete" className="h-10 sm:h-11 object-contain" />
+          <p className="text-[#DDC395] text-lg sm:text-xl font-semibold tracking-wide leading-tight sm:invisible"
             style={{ fontFamily: "'Georgia', 'Times New Roman', serif", letterSpacing: '0.04em' }}>
-            Hotel Laraquete<br /><span className="text-xs font-normal tracking-widest uppercase" style={{ fontFamily: 'inherit' }}>Reservas</span>
+            Hotel Laraquete<br /><span className="text-xs font-normal tracking-widest uppercase">Reservas</span>
           </p>
         </div>
         <button onClick={() => setShowSettings(true)}
@@ -1417,15 +1432,9 @@ export default function App() {
       <div className="flex">
         <main className="flex-1 p-4 lg:p-6 pb-28 lg:pb-6">
           <div className="flex items-center gap-5 mb-4 flex-wrap">
-            {[
-              ['bg-emerald-400', 'Libre'],
-              ['bg-amber-400', 'Reservado'],
-              ['bg-red-500', 'Ocupado'],
-              ['bg-purple-500', 'Confirmar salida'],
-            ].map(([c, l]) => (
+            {[['bg-emerald-400','Libre'],['bg-amber-400','Reservado'],['bg-red-500','Ocupado'],['bg-purple-500','Confirmar salida']].map(([c,l]) => (
               <div key={l} className="flex items-center gap-1.5">
-                <span className={`w-2.5 h-2.5 rounded-full ${c}`} />
-                <span className="text-xs text-gray-400">{l}</span>
+                <span className={`w-2.5 h-2.5 rounded-full ${c}`} /><span className="text-xs text-gray-400">{l}</span>
               </div>
             ))}
           </div>
@@ -1437,14 +1446,9 @@ export default function App() {
           </div>
         </main>
 
-        <aside className="hidden lg:block w-72 shrink-0 border-l border-gray-100 bg-white p-5 min-h-[calc(100vh-53px)]">
-          <SiguientePanel
-            habitaciones={habitaciones}
-            onSelectHab={h => setSelected(h)}
-            empresas={empresas}
-            cobrosEmpresa={cobrosEmpresa}
-            onToggleCobro={handleToggleCobro}
-          />
+        <aside className="hidden lg:block w-72 shrink-0 border-l border-gray-100 bg-white p-5 min-h-[calc(100vh-53px)] overflow-y-auto">
+          <SiguientePanel habitaciones={habitaciones} onSelectHab={h => setSelected(h)}
+            empresas={empresas} cobrosEmpresa={cobrosEmpresa} onToggleCobro={handleToggleCobro} />
         </aside>
       </div>
 
@@ -1467,13 +1471,9 @@ export default function App() {
         </button>
         {showSiguiente && (
           <div className="px-5 pb-5 pt-3 max-h-96 overflow-y-auto border-t border-gray-100">
-            <SiguientePanel
-              habitaciones={habitaciones}
+            <SiguientePanel habitaciones={habitaciones}
               onSelectHab={h => { setSelected(h); setShowSiguiente(false) }}
-              empresas={empresas}
-              cobrosEmpresa={cobrosEmpresa}
-              onToggleCobro={handleToggleCobro}
-            />
+              empresas={empresas} cobrosEmpresa={cobrosEmpresa} onToggleCobro={handleToggleCobro} />
           </div>
         )}
       </div>
