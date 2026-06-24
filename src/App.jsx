@@ -987,13 +987,7 @@ function SiguientePanel({ habitaciones, onSelectHab, empresas, cobrosEmpresa, on
                           <ChevronIcon open={!!expandedEmpresas[expandKey]} />
                           <span className="text-sm font-semibold text-[#224258] truncate">{emp.nombre}</span>
                         </button>
-                        <label className="flex items-center gap-1 cursor-pointer shrink-0">
-                          <input type="checkbox"
-                            checked={cobrado}
-                            onChange={() => onToggleCobro(cobroKey)}
-                            className="w-3.5 h-3.5 accent-emerald-500" />
-                          <span className="text-[10px] text-gray-400">Cobrado</span>
-                        </label>
+
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-500 pl-5">
                         <span>{habs.length} hab. · {totalPersonas} pers.</span>
@@ -1200,11 +1194,11 @@ function RoomCard({ hab, onClick, onConfirmSalida, empresas }) {
         className={`${bg[hab.estado]} border ${ring[hab.estado]} rounded-xl p-2.5 flex flex-col cursor-pointer hover:shadow-sm transition select-none`}
         style={{ width: '152px', height: '148px' }}>
 
-        <div className="flex items-center justify-between mb-0.5">
+        <div className="flex items-start justify-between mb-0.5">
           <span className="text-sm font-semibold text-gray-800">{hab.numero}</span>
-          <div className="flex items-center gap-1">
-            <PagoIcon hab={hab} />
+          <div className="flex flex-col items-center gap-0.5">
             <span className={`w-2 h-2 rounded-full shrink-0 ${dot[hab.estado]}`} />
+            <PagoIcon hab={hab} />
           </div>
         </div>
 
@@ -1411,16 +1405,8 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gray-50">
       <header className="relative bg-[#224258] px-5 py-3 sticky top-0 z-30 shadow-sm">
-        <div className="flex items-center justify-center gap-4">
-          <p className="text-[#DDC395] text-lg sm:text-xl font-semibold tracking-wide leading-tight hidden sm:block"
-            style={{ fontFamily: "'Georgia', 'Times New Roman', serif", letterSpacing: '0.04em' }}>
-            Hotel Laraquete<br /><span className="text-xs font-normal tracking-widest uppercase">Reservas</span>
-          </p>
+        <div className="flex items-center justify-center">
           <img src="/logo-hotel-laraquete.png" alt="Hotel Laraquete" className="h-10 sm:h-11 object-contain" />
-          <p className="text-[#DDC395] text-lg sm:text-xl font-semibold tracking-wide leading-tight sm:invisible"
-            style={{ fontFamily: "'Georgia', 'Times New Roman', serif", letterSpacing: '0.04em' }}>
-            Hotel Laraquete<br /><span className="text-xs font-normal tracking-widest uppercase">Reservas</span>
-          </p>
         </div>
         <button onClick={() => setShowSettings(true)}
           className="absolute right-5 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/10 text-[#DDC395] hover:text-white transition"
