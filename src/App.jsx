@@ -54,17 +54,49 @@ function nowSantiago() {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Santiago' }))
 }
 
+// Suma N días a una fecha ISO yyyy-mm-dd, sin problemas de timezone
+function sumarDias(iso, n) {
+  const [y, m, d] = iso.split('-').map(Number)
+  const dt = new Date(y, m - 1, d)
+  dt.setDate(dt.getDate() + n)
+  const yy = dt.getFullYear()
+  const mm = String(dt.getMonth() + 1).padStart(2, '0')
+  const dd = String(dt.getDate()).padStart(2, '0')
+  return `${yy}-${mm}-${dd}`
+}
+
+// Lista de fechas (ISO) en que efectivamente corresponde desayuno.
+// Por defecto: la mañana siguiente a cada noche, es decir desde (fecha_inicio + 1)
+// hasta fecha_fin inclusive (el día de llegada NO desayuna porque se ingresa en la tarde).
+// Si contarDiaIngreso=true, se agrega también fecha_inicio.
+function diasDesayuno(fechaInicio, fechaFin, contarDiaIngreso) {
+  if (!fechaInicio || !fechaFin) return []
+  const dias = []
+  let cursor = contarDiaIngreso ? fechaInicio : sumarDias(fechaInicio, 1)
+  while (cursor <= fechaFin) {
+    dias.push(cursor)
+    cursor = sumarDias(cursor, 1)
+  }
+  return dias
+}
+
 // ── CÁLCULO CENTRAL DE MONTOS ────────────────────────────────────────────────
 // Dado el form, devuelve todos los valores relevantes para desglose y saldos
 function calcMontos(form, precioDesayuno) {
   const noches = calcNochesFechas(form.fecha_inicio, form.fecha_fin)
   const precioHab = (form.precio_base || 0) * Math.max(noches, 1)
 
-  // Desayunos: total - descuentos por día
-  const desayunosPorNoche = form.desayunos || 0
-  const descuentosDesayuno = form.descuentos_desayuno || 0  // días sin cobrar desayuno
-  const nochesDesayuno = Math.max(0, Math.max(noches, 1) - descuentosDesayuno)
-  const desayunosBruto = desayunosPorNoche * nochesDesayuno * precioDesayuno
+  // Desayunos: por día real de estadía, cada día puede tener su propia cantidad
+  // (por defecto form.desayunos, salvo que el día tenga un override puntual)
+  const desayunosBase = form.desayunos || 0
+  const overrides = form.desayunos_overrides || {}
+  const dias = diasDesayuno(form.fecha_inicio, form.fecha_fin, form.contar_dia_ingreso)
+  const detalleDesayunos = dias.map(dia => ({
+    dia,
+    cantidad: overrides[dia] !== undefined ? overrides[dia] : desayunosBase,
+  }))
+  const totalUnidadesDesayuno = detalleDesayunos.reduce((s, d) => s + d.cantidad, 0)
+  const desayunosBruto = totalUnidadesDesayuno * precioDesayuno
   const desayunosAplicado = form.no_cobrar_desayuno ? 0 : desayunosBruto
 
   // Subtotal bruto (sin IVA)
@@ -74,11 +106,12 @@ function calcMontos(form, precioDesayuno) {
   const ivaAplicado = form.no_cobrar_iva ? 0 : ivaBase
   const total = Math.round(subtotal + ivaAplicado)
 
-  // Abono: se descuenta del total (post-IVA), pero fue ingresado al valor bruto
+  // Abono / monto pagado
   const abono = form.abono || 0
   const montoPagado = form.monto_pagado || 0
 
-  // Saldo tras abono (reservado): total - abono
+  // Saldo tras abono (reservado): el IVA se calcula sobre el subtotal completo
+  // ignorando el abono, y luego se descuenta el abono del total ya con IVA.
   const saldoTrasAbono = total - abono
 
   // Para reservado/pagado: comparar monto_pagado contra subtotal (sin IVA)
@@ -87,9 +120,10 @@ function calcMontos(form, precioDesayuno) {
   return {
     noches,
     precioHab,
-    desayunosPorNoche,
-    nochesDesayuno,
-    descuentosDesayuno,
+    desayunosBase,
+    dias,
+    detalleDesayunos,
+    totalUnidadesDesayuno,
     desayunosBruto,
     desayunosAplicado,
     subtotal,
@@ -217,7 +251,8 @@ function RoomModal({ hab, onClose, onSave }) {
     abono: 0,
     monto_pagado: 0,
     desayunos: 0,
-    descuentos_desayuno: 0,
+    contar_dia_ingreso: false,
+    desayunos_overrides: {},
     ...hab,
     precio_base: precioBase,
   })
@@ -254,12 +289,22 @@ function RoomModal({ hab, onClose, onSave }) {
     })
   }
 
+  const ajustarDesayunoDia = (dia, delta) => {
+    setForm(prev => {
+      const base = prev.desayunos || 0
+      const overrides = { ...(prev.desayunos_overrides || {}) }
+      const actual = overrides[dia] !== undefined ? overrides[dia] : base
+      const nuevo = Math.max(0, actual + delta)
+      if (nuevo === base) delete overrides[dia]
+      else overrides[dia] = nuevo
+      return { ...prev, desayunos_overrides: overrides }
+    })
+  }
+
   const labelPago = {
     no_abonado: 'No abonado', abonado: 'Abonado', pagado: 'Pagado',
     no_pagado: 'No pagado', pago_parcial: 'Pago parcial', pago_total: 'Pago total',
   }
-
-  const maxDescuentos = Math.max(0, m.noches || 1)
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -277,26 +322,17 @@ function RoomModal({ hab, onClose, onSave }) {
 
         <div className="px-6 py-5 space-y-4">
 
-          {/* Tipo (solo lectura) y Estado */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block mb-1 text-xs font-medium text-gray-400 uppercase tracking-wider">Tipo</label>
-              <div className="w-full border border-gray-100 bg-gray-50 rounded-lg px-3 py-2 text-sm text-gray-500">
-                {form.tipo || 'Sin asignar'}
-              </div>
-            </div>
-            <div>
-              <label className="block mb-1 text-xs font-medium text-gray-400 uppercase tracking-wider">Estado</label>
-              <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:border-gray-400"
-                value={form.estado} onChange={e => set('estado', e.target.value)}>
-                <option value="libre">Libre</option>
-                <option value="reservado">Reservado</option>
-                <option value="ocupado">Ocupado</option>
-                <option value="confirmar_salida">Confirmar salida</option>
-              </select>
-            </div>
+          {/* Estado */}
+          <div>
+            <label className="block mb-1 text-xs font-medium text-gray-400 uppercase tracking-wider">Estado</label>
+            <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:border-gray-400"
+              value={form.estado} onChange={e => set('estado', e.target.value)}>
+              <option value="libre">Libre</option>
+              <option value="reservado">Reservado</option>
+              <option value="ocupado">Ocupado</option>
+              <option value="confirmar_salida">Confirmar salida</option>
+            </select>
           </div>
-          <p className="text-xs text-gray-400 -mt-2">El tipo se asigna en Configuración → Habitaciones por tipo.</p>
 
           {/* Acción contextual principal */}
           {esReservado && (
@@ -378,7 +414,7 @@ function RoomModal({ hab, onClose, onSave }) {
           {/* Desayunos */}
           {mostrarFormulario && (
             <div className="space-y-2">
-              <label className="block mb-1 text-xs font-medium text-gray-400 uppercase tracking-wider">Desayunos por noche</label>
+              <label className="block mb-1 text-xs font-medium text-gray-400 uppercase tracking-wider">Desayunos por día</label>
               <select className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none"
                 value={form.desayunos || 0} onChange={e => set('desayunos', parseInt(e.target.value))}>
                 <option value={0}>Ninguno</option>
@@ -388,22 +424,32 @@ function RoomModal({ hab, onClose, onSave }) {
                 <p className="text-xs text-gray-400">Precio c/u: ${precioDesayuno.toLocaleString('es-CL')} · definido en Configuración</p>
               )}
 
-              {/* Descontar días sin desayuno */}
-              {(form.desayunos || 0) > 0 && m.noches > 1 && (
-                <div>
-                  <label className="block mb-1 text-xs font-medium text-gray-400 uppercase tracking-wider">
-                    Días sin desayuno (descuento)
-                  </label>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => set('descuentos_desayuno', Math.max(0, (form.descuentos_desayuno || 0) - 1))}
-                      className="w-8 h-8 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 text-lg font-medium flex items-center justify-center transition">−</button>
-                    <span className="w-8 text-center text-sm font-semibold text-gray-800">{form.descuentos_desayuno || 0}</span>
-                    <button
-                      onClick={() => set('descuentos_desayuno', Math.min(maxDescuentos - 1, (form.descuentos_desayuno || 0) + 1))}
-                      className="w-8 h-8 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 text-lg font-medium flex items-center justify-center transition">+</button>
-                    <span className="text-xs text-gray-400 ml-1">de {m.noches} noches</span>
-                  </div>
+              <label className="flex items-center gap-2 cursor-pointer select-none pt-1">
+                <input type="checkbox" checked={!!form.contar_dia_ingreso}
+                  onChange={e => set('contar_dia_ingreso', e.target.checked)}
+                  className="w-4 h-4 accent-gray-800" />
+                <span className="text-sm text-gray-600">Contar día de ingreso</span>
+              </label>
+
+              {/* Desglose editable por día — permite ajustar cada día individualmente */}
+              {(form.desayunos || 0) > 0 && m.detalleDesayunos.length > 0 && (
+                <div className="space-y-1.5 pt-1">
+                  <p className="text-xs text-gray-400">Ajustar por día (días en que efectivamente desayunan)</p>
+                  {m.detalleDesayunos.map(({ dia, cantidad }) => (
+                    <div key={dia}
+                      className="flex items-center justify-between bg-white border border-gray-200 rounded-lg px-2.5 py-1.5">
+                      <span className="text-sm text-gray-600">{fmtFecha(dia)}</span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => ajustarDesayunoDia(dia, -1)}
+                          className="w-7 h-7 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 text-base font-medium flex items-center justify-center transition">−</button>
+                        <span className="w-5 text-center text-sm font-semibold text-gray-800">{cantidad}</span>
+                        <button
+                          onClick={() => ajustarDesayunoDia(dia, 1)}
+                          className="w-7 h-7 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100 text-base font-medium flex items-center justify-center transition">+</button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -519,11 +565,10 @@ function RoomModal({ hab, onClose, onSave }) {
               </div>
 
               {/* Desayunos */}
-              {(form.desayunos || 0) > 0 && (
+              {m.totalUnidadesDesayuno > 0 && (
                 <div className="flex justify-between text-gray-500">
                   <span>
-                    Desayunos ×{form.desayunos} ×{m.nochesDesayuno} noche{m.nochesDesayuno !== 1 ? 's' : ''}
-                    {m.descuentosDesayuno > 0 ? ` (−${m.descuentosDesayuno} día${m.descuentosDesayuno !== 1 ? 's' : ''})` : ''}
+                    Desayunos ×{m.totalUnidadesDesayuno}
                     {form.no_cobrar_desayuno ? ' — exento' : ''}
                   </span>
                   <span className={form.no_cobrar_desayuno ? 'line-through text-gray-300' : ''}>
@@ -538,15 +583,7 @@ function RoomModal({ hab, onClose, onSave }) {
                 <span>${m.subtotal.toLocaleString('es-CL')}</span>
               </div>
 
-              {/* Abono (se descuenta del subtotal bruto antes del IVA) */}
-              {esReservado && form.estado_pago === 'abonado' && m.abono > 0 && (
-                <div className="flex justify-between text-amber-600">
-                  <span>− Abono</span>
-                  <span>−${m.abono.toLocaleString('es-CL')}</span>
-                </div>
-              )}
-
-              {/* IVA — se aplica sobre subtotal completo */}
+              {/* IVA — se aplica sobre subtotal completo, ignorando el abono */}
               <div className="flex justify-between text-gray-500">
                 <span>IVA 19%{form.no_cobrar_iva ? ' — exento' : ''}</span>
                 <span className={form.no_cobrar_iva ? 'line-through text-gray-300' : ''}>
@@ -560,12 +597,18 @@ function RoomModal({ hab, onClose, onSave }) {
                 <span>${m.total.toLocaleString('es-CL')}</span>
               </div>
 
-              {/* Saldo reservado con abono */}
+              {/* Abono y saldo (recién aquí, descontado del total ya con IVA) */}
               {esReservado && form.estado_pago === 'abonado' && m.abono > 0 && (
-                <div className="flex justify-between font-medium text-amber-600">
-                  <span>Saldo pendiente</span>
-                  <span>${Math.max(0, m.saldoTrasAbono).toLocaleString('es-CL')}</span>
-                </div>
+                <>
+                  <div className="flex justify-between text-gray-500">
+                    <span>Abono</span>
+                    <span>−${m.abono.toLocaleString('es-CL')}</span>
+                  </div>
+                  <div className="flex justify-between font-medium text-amber-600">
+                    <span>Saldo pendiente</span>
+                    <span>${Math.max(0, m.saldoTrasAbono).toLocaleString('es-CL')}</span>
+                  </div>
+                </>
               )}
 
               {/* Monto pagado reservado (comparado contra subtotal bruto) */}
@@ -644,10 +687,18 @@ function SiguientePanel({ habitaciones, onSelectHab }) {
     .slice(0, 20)
 
   const conDesayuno = habitaciones
-    .filter(h => (h.estado === 'ocupado' || h.estado === 'reservado') && (h.desayunos || 0) > 0)
+    .filter(h => h.estado === 'ocupado')
+    .map(h => {
+      const dias = diasDesayuno(h.fecha_inicio, h.fecha_fin, h.contar_dia_ingreso)
+      if (!dias.includes(hoy)) return null
+      const overrides = h.desayunos_overrides || {}
+      const cantidad = overrides[hoy] !== undefined ? overrides[hoy] : (h.desayunos || 0)
+      return cantidad > 0 ? { numero: h.numero, cantidad } : null
+    })
+    .filter(Boolean)
     .sort((a, b) => Number(a.numero) - Number(b.numero))
 
-  const totalDesayunos = conDesayuno.reduce((sum, h) => sum + (h.desayunos || 0), 0)
+  const totalDesayunos = conDesayuno.reduce((sum, h) => sum + h.cantidad, 0)
   const habsConDesayunoLabel = conDesayuno.map(h => h.numero).join('-')
 
   return (
@@ -786,16 +837,9 @@ function PagoIcon({ hab }) {
 
 // Calcula saldo/total a mostrar en la tarjeta del grid
 function calcSaldoCard(hab, settings) {
-  const noches = calcNochesFechas(hab.fecha_inicio, hab.fecha_fin)
   const precioBase = settings.preciosHab[hab.tipo] || hab.precio_base || 0
-  const precioHab = precioBase * Math.max(noches, 1)
-  const desayunosPorNoche = hab.desayunos || 0
-  const descuentos = hab.descuentos_desayuno || 0
-  const nochesDesayuno = Math.max(0, Math.max(noches, 1) - descuentos)
-  const desayunosAplicado = hab.no_cobrar_desayuno ? 0 : desayunosPorNoche * nochesDesayuno * settings.precioDesayuno
-  const subtotal = precioHab + desayunosAplicado
-  const ivaAplicado = hab.no_cobrar_iva ? 0 : subtotal * 0.19
-  const total = Math.round(subtotal + ivaAplicado)
+  const m = calcMontos({ ...hab, precio_base: precioBase }, settings.precioDesayuno)
+  const { total, subtotal, totalUnidadesDesayuno } = m
 
   const ep = hab.estado_pago
   let saldo = total
@@ -814,7 +858,7 @@ function calcSaldoCard(hab, settings) {
     if (ep === 'pago_parcial' && (hab.monto_pagado || 0) > 0) saldo = total - (hab.monto_pagado || 0)
   }
 
-  return { total, saldo, pagadoTotal }
+  return { total, saldo, pagadoTotal, totalUnidadesDesayuno }
 }
 
 function RoomCard({ hab, onClick, onConfirmSalida }) {
@@ -840,7 +884,7 @@ function RoomCard({ hab, onClick, onConfirmSalida }) {
   }
 
   const mostrarMontos = hab.estado === 'reservado' || hab.estado === 'ocupado' || hab.estado === 'confirmar_salida'
-  const { total, saldo, pagadoTotal } = mostrarMontos ? calcSaldoCard(hab, settings) : {}
+  const { total, saldo, pagadoTotal, totalUnidadesDesayuno } = mostrarMontos ? calcSaldoCard(hab, settings) : {}
 
   return (
     <>
@@ -880,8 +924,8 @@ function RoomCard({ hab, onClick, onConfirmSalida }) {
                 )}
               </>
             )}
-            {(hab.desayunos || 0) > 0 && (
-              <span className="block text-xs text-gray-400">{hab.desayunos} des.</span>
+            {(totalUnidadesDesayuno || 0) > 0 && (
+              <span className="block text-xs text-gray-400">{totalUnidadesDesayuno} des.</span>
             )}
           </div>
         )}
@@ -966,19 +1010,20 @@ export default function App() {
     }
 
     const settings = loadSettings()
-    const noches = calcNochesFechas(form.fecha_inicio, form.fecha_fin)
-    const precioHab = (form.precio_base || 0) * Math.max(noches, 1)
-    const descuentos = form.descuentos_desayuno || 0
-    const nochesDesayuno = Math.max(0, Math.max(noches, 1) - descuentos)
-    const desayunosAplicado = form.no_cobrar_desayuno ? 0 : (form.desayunos || 0) * nochesDesayuno * settings.precioDesayuno
-    const subtotal = precioHab + desayunosAplicado
+    const m = calcMontos(form, settings.precioDesayuno)
 
     let saldoPendiente = false
     if (form.estado === 'reservado' && form.estado_pago === 'pagado') {
-      saldoPendiente = subtotal !== (form.monto_pagado || 0)
+      saldoPendiente = m.subtotal !== (form.monto_pagado || 0)
     }
 
-    const payload = { ...form, saldo_pendiente_pago: saldoPendiente }
+    // Limpiar overrides de días que quedaron fuera del rango de fechas actual
+    const diasValidos = new Set(m.dias)
+    const overridesLimpios = Object.fromEntries(
+      Object.entries(form.desayunos_overrides || {}).filter(([dia]) => diasValidos.has(dia))
+    )
+
+    const payload = { ...form, desayunos_overrides: overridesLimpios, saldo_pendiente_pago: saldoPendiente }
     delete payload.tipo
     delete payload.precio_desayuno
     delete payload._confirmar_salida
@@ -992,7 +1037,7 @@ export default function App() {
   async function handleConfirmSalida(hab) {
     const { error } = await supabase.from('habitaciones').update({
       estado: 'libre', fecha_inicio: null, fecha_fin: null,
-      desayunos: 0, descuentos_desayuno: 0,
+      desayunos: 0, contar_dia_ingreso: false, desayunos_overrides: {},
       no_cobrar_desayuno: false, no_cobrar_iva: false,
       estado_pago: 'no_abonado', abono: 0, monto_pagado: 0, saldo_pendiente_pago: false,
     }).eq('id', hab.id)
