@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react'
 import { supabase } from './supabase'
 
-const TIPOS = ['Individual', 'Doble', 'Matrimonial', 'Triple', 'Matrimonial+1']
+const TIPOS = [
+  'Individual', 'Doble', 'Matrimonial', 'Triple', 'Matrimonial+1',
+  'Individual Superior', 'Doble Superior', 'Triple Superior', 'Matrimonial Superior', 'Cuádruple',
+]
 
 // ── Helpers settings (localStorage) ─────────────────────────────────────────
 function loadSettings() {
@@ -182,7 +185,7 @@ function SettingsModal({ onClose, onSaved }) {
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl overflow-y-auto max-h-[92vh]">
         <div className="flex items-center justify-between mb-5">
-          <h2 className="text-base font-semibold text-gray-900">Configuración</h2>
+          <h2 className="text-base font-semibold text-[#224258]">Configuración</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
         </div>
 
@@ -229,7 +232,7 @@ function SettingsModal({ onClose, onSaved }) {
             Cancelar
           </button>
           <button onClick={guardar}
-            className="flex-1 bg-gray-900 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-gray-800 transition">
+            className="flex-1 bg-[#224258] text-white rounded-xl py-2.5 text-sm font-medium hover:bg-[#1a3447] transition">
             Guardar
           </button>
         </div>
@@ -260,6 +263,9 @@ function RoomModal({ hab, onClose, onSave }) {
   // Selector de fechas integrado: fase 'inicio' → muestra picker entrada,
   // al elegir entrada pasa automáticamente a 'fin', ambos pickers siempre visibles
   const [fechaFase, setFechaFase] = useState('inicio')
+
+  // Muestra/oculta el ajuste fino de desayunos día por día
+  const [ajustarPorDia, setAjustarPorDia] = useState(false)
 
   const esReservado = form.estado === 'reservado'
   const esOcupado = form.estado === 'ocupado'
@@ -301,6 +307,21 @@ function RoomModal({ hab, onClose, onSave }) {
     })
   }
 
+  // Al llegar la reserva: el abono pasa a ser el monto ya pagado, y se guarda
+  // de inmediato sin necesidad de presionar "Guardar".
+  const llegoReserva = () => {
+    const abonoPrevio = form.abono || 0
+    const nuevoForm = {
+      ...form,
+      estado: 'ocupado',
+      estado_pago: abonoPrevio > 0 ? 'pago_parcial' : 'no_pagado',
+      monto_pagado: abonoPrevio,
+      abono: 0,
+    }
+    setForm(nuevoForm)
+    onSave(nuevoForm)
+  }
+
   const labelPago = {
     no_abonado: 'No abonado', abonado: 'Abonado', pagado: 'Pagado',
     no_pagado: 'No pagado', pago_parcial: 'Pago parcial', pago_total: 'Pago total',
@@ -314,7 +335,7 @@ function RoomModal({ hab, onClose, onSave }) {
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <div>
             <p className="text-xs text-gray-400 uppercase tracking-wider">Habitación</p>
-            <h2 className="text-xl font-semibold text-gray-900">{hab.numero}</h2>
+            <h2 className="text-xl font-semibold text-[#224258]">{hab.numero}</h2>
           </div>
           <button onClick={onClose}
             className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-400 text-xl transition">×</button>
@@ -337,9 +358,9 @@ function RoomModal({ hab, onClose, onSave }) {
           {/* Acción contextual principal */}
           {esReservado && (
             <button
-              onClick={() => { set('estado', 'ocupado'); set('estado_pago', 'no_pagado') }}
+              onClick={llegoReserva}
               className="w-full py-2.5 rounded-xl text-sm font-semibold transition"
-              style={{ background: '#B8860B', color: '#fff' }}>
+              style={{ background: '#DDC395', color: '#224258' }}>
               Llegó la reserva
             </button>
           )}
@@ -427,12 +448,21 @@ function RoomModal({ hab, onClose, onSave }) {
               <label className="flex items-center gap-2 cursor-pointer select-none pt-1">
                 <input type="checkbox" checked={!!form.contar_dia_ingreso}
                   onChange={e => set('contar_dia_ingreso', e.target.checked)}
-                  className="w-4 h-4 accent-gray-800" />
+                  className="w-4 h-4 accent-[#224258]" />
                 <span className="text-sm text-gray-600">Contar día de ingreso</span>
               </label>
 
+              {(form.desayunos || 0) > 0 && m.dias.length > 0 && (
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input type="checkbox" checked={ajustarPorDia}
+                    onChange={e => setAjustarPorDia(e.target.checked)}
+                    className="w-4 h-4 accent-[#224258]" />
+                  <span className="text-sm text-gray-600">Ajustar desayunos por día</span>
+                </label>
+              )}
+
               {/* Desglose editable por día — permite ajustar cada día individualmente */}
-              {(form.desayunos || 0) > 0 && m.detalleDesayunos.length > 0 && (
+              {ajustarPorDia && (form.desayunos || 0) > 0 && m.detalleDesayunos.length > 0 && (
                 <div className="space-y-1.5 pt-1">
                   <p className="text-xs text-gray-400">Ajustar por día (días en que efectivamente desayunan)</p>
                   {m.detalleDesayunos.map(({ dia, cantidad }) => (
@@ -461,13 +491,13 @@ function RoomModal({ hab, onClose, onSave }) {
               <label className="flex items-center gap-2 cursor-pointer select-none">
                 <input type="checkbox" checked={!!form.no_cobrar_desayuno}
                   onChange={e => set('no_cobrar_desayuno', e.target.checked)}
-                  className="w-4 h-4 accent-gray-800" />
+                  className="w-4 h-4 accent-[#224258]" />
                 <span className="text-sm text-gray-600">No cobrar desayuno</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer select-none">
                 <input type="checkbox" checked={!!form.no_cobrar_iva}
                   onChange={e => set('no_cobrar_iva', e.target.checked)}
-                  className="w-4 h-4 accent-gray-800" />
+                  className="w-4 h-4 accent-[#224258]" />
                 <span className="text-sm text-gray-600">No cobrar IVA</span>
               </label>
             </div>
@@ -592,7 +622,7 @@ function RoomModal({ hab, onClose, onSave }) {
               </div>
 
               {/* Total */}
-              <div className="flex justify-between font-semibold text-gray-900 border-t border-gray-200 pt-2">
+              <div className="flex justify-between font-semibold text-[#224258] border-t border-gray-200 pt-2">
                 <span>Total</span>
                 <span>${m.total.toLocaleString('es-CL')}</span>
               </div>
@@ -656,7 +686,7 @@ function RoomModal({ hab, onClose, onSave }) {
               Cancelar
             </button>
             <button onClick={() => onSave(form)}
-              className="flex-1 bg-gray-900 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-gray-800 transition">
+              className="flex-1 bg-[#224258] text-white rounded-xl py-2.5 text-sm font-medium hover:bg-[#1a3447] transition">
               Guardar
             </button>
           </div>
@@ -744,11 +774,11 @@ function SiguientePanel({ habitaciones, onSelectHab }) {
       {/* Salidas informativas */}
       {todasSalidas.length > 0 && (
         <div>
-          <p className="text-xs font-semibold text-blue-400 uppercase tracking-wider mb-2">Salidas</p>
+          <p className="text-xs font-semibold text-[#224258]/60 uppercase tracking-wider mb-2">Salidas</p>
           <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
             {todasSalidas.map(h => (
               <div key={h.id}
-                className="w-full bg-blue-50 border border-blue-100 rounded-xl px-3 py-2 text-xs">
+                className="w-full bg-[#DDC395]/15 border border-[#DDC395]/40 rounded-xl px-3 py-2 text-xs">
                 <p className="font-medium text-gray-700">Hab. {h.numero} — {h.tipo || 'Sin tipo'}</p>
                 <p className="text-gray-400 mt-0.5">Salida: {fmtFecha(h.fecha_fin)}</p>
               </div>
@@ -952,6 +982,10 @@ export default function App() {
   const [settingsVersion, setSettingsVersion] = useState(0)
 
   useEffect(() => {
+    document.title = 'Hotel Laraquete Reservas'
+  }, [])
+
+  useEffect(() => {
     fetchHabitaciones()
     const channel = supabase
       .channel('habitaciones-realtime')
@@ -1060,10 +1094,16 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-100 px-5 py-3 flex items-center justify-between sticky top-0 z-30">
-        <h1 className="text-sm font-semibold text-gray-700 tracking-wide">Hotel Manager</h1>
+      <header className="relative bg-[#224258] px-5 py-3 sticky top-0 z-30 shadow-sm">
+        <div className="flex flex-col items-center">
+          <img src="/logo-hotel-laraquete.png" alt="Hotel Laraquete"
+            className="h-10 sm:h-11 object-contain" />
+          <p className="text-[10px] font-medium text-[#DDC395] uppercase tracking-widest mt-1">
+            Hotel Laraquete Reservas
+          </p>
+        </div>
         <button onClick={() => setShowSettings(true)}
-          className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition"
+          className="absolute right-5 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/10 text-[#DDC395] hover:text-white transition"
           title="Configuración">
           <GearIcon />
         </button>
